@@ -1,0 +1,71 @@
+robot: "example"
+address: "127.0.0.1"
+signaling_port: 8443 # For webrtc outputs, the port of the signaling server
+cameras:
+  example_camera_v4l2:
+    name: "Example Camera v4l2"
+    input:
+      type: v4l2
+      device: "/dev/video0"
+      # For v4l2 width, height and framerate have to be specified.
+      # You can use `ros2 run ros_camera_server v4l2_caps_investigator` to get the capabilities of your v4l2 device.
+      width: 1920
+      height: 1080
+      framerate: "30/1"
+      # Optional: set initial V4L2 controls. Use `ros2 run ros_camera_server v4l2_controls_inspector`
+      # to discover available controls and their ranges for your device.
+      # Controls can also be changed at runtime via `ros2 param set`.
+      # controls:
+      #   auto_exposure: 1            # 1=Manual, 3=Aperture Priority
+      #   brightness: 128
+      #   exposure_time__absolute: 500
+    outputs:
+      - type: srt
+        codec: h265
+        framerate: "30/1" # Limits the framerate. Frames are only dropped, never duplicated.
+        port: 7100
+        bitrate: 800 # in kbps
+        width: 1920 # For the outputs width and height are upper limits. Aspect ratio is preserved.
+        height: 1080
+      # The following is a lower resolution stream to show case automatic switching based on the output size
+      # Try the example qml file and make the window small to see the stream switching
+      # without visible frame drops. The stream will automatically switch back to the higher resolution when
+      # the window is made large again.
+      - type: srt
+        codec: h265
+        framerate: "30/1"
+        port: 7101
+        bitrate: 300
+        width: 600
+        height: 480
+      - type: webrtc
+        codec: h264
+        width: 1920
+        height: 1080
+        framerate: 30/1
+        bitrate: 2000 # in kbps
+      - type: ros2
+        topic: "/camera_server/example"
+        frame_id: "example_camera_optical_frame"
+        codec: auto # Supported codecs: auto|raw|compressed. auto will select based on the available input format
+        format: "rgb8" # Only used if codec is raw. This specifies the encoding of the ROS image messages. Supported formats: rgb8|bgr8|rgba8|bgra8|mono8|mono16|uyvy|yuyv|nv21|nv24
+        # Optional: publish CameraInfo on the standard sibling topic (for example /camera_server/camera_info).
+        # Supported URL schemes include file:///absolute/path/to/calibration.yaml and package://my_pkg/calibrations/example.yaml
+        # Note that the camera info has to match the resolution of the output, otherwise the camera info will not be published.
+        camera_info_url: "package://ros_camera_server/config/example_camera_info.yaml"
+  example_camera_ros:
+    name: "Example Camera ROS"
+    input:
+      type: ros2
+      topic: "/image_raw"
+      #framerate: "15/1" # You can specify the framerate, otherwise it will be determined by waiting for the first 5 images
+      # Supported formats: raw|jpeg|png. jpeg/png are usually used for /compressed image topics.
+      # Currently automatic format detection is not implemented nor planned for the pipelines, so you need to know and specify the correct format.
+      format: raw
+    outputs:
+      - type: srt
+        codec: h264
+        bitrate: 1000
+        framerate: "30/1" # If the input is limited to 15/1, this will not increase the framerate.
+        latency: 100 # in ms, optional, default: 100ms. This is the latency that will be set on the SRT sink. Higher latency can help with unstable network connections.
+        port: 7110

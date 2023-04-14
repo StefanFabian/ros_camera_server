@@ -1,0 +1,48 @@
+/*
+ *  ros_camera_server - Intelligent camera stream server.
+ *  Copyright (C) 2026  Stefan Fabian
+ *  This program is free software: you can redistribute it and/or modify
+ *  it under the terms of the GNU Affero General Public License as published
+ *  by the Free Software Foundation, either version 3 of the License, or
+ *  (at your option) any later version.
+ *
+ *  This program is distributed in the hope that it will be useful,
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *  GNU Affero General Public License for more details.
+ *
+ *  You should have received a copy of the GNU Affero General Public License
+ *  along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#ifndef ROS_CAMERA_SERVER_V4L2_INPUT_HPP
+#define ROS_CAMERA_SERVER_V4L2_INPUT_HPP
+
+#include "ros_camera_server/configuration.hpp"
+#include <map>
+#include <string>
+
+namespace ros_camera_server
+{
+
+class V4l2InputConfiguration : public InputConfiguration
+{
+public:
+  std::string device;
+  std::string media_type;
+  int width;
+  int height;
+  Framerate framerate;
+  std::map<std::string, int> controls; // Initial V4L2 control values from config
+
+  StreamInput createInput( const rclcpp::Node::SharedPtr &,
+                           const std::string &camera_id ) const override;
+  static std::shared_ptr<V4l2InputConfiguration> from_yaml_shared( const YAML::Node &config );
+
+private:
+  GstCaps *selectCaps( GstElement *src ) const;
+};
+
+} // namespace ros_camera_server
+
+#endif // ROS_CAMERA_SERVER_V4L2_INPUT_HPP

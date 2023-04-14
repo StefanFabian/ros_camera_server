@@ -1,0 +1,20 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>ros_camera_server_msgs</name>
+  <version>0.1.0</version>
+  <description>ROS 2 message definitions for ros_camera_server: camera discovery announcements, stream profiles, and camera/stream metadata.</description>
+
+  <maintainer email="fabian@sim.tu-darmstadt.de">Stefan Fabian</maintainer>
+
+  <license>AGPL-3.0-only</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>rosidl_default_generators</buildtool_depend>
+  <exec_depend>rosidl_default_runtime</exec_depend>
+
+  <member_of_group>rosidl_interface_packages</member_of_group>
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

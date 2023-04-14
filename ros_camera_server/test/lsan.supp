@@ -1,0 +1,20 @@
+# LeakSanitizer suppressions for third-party leaks that we cannot fix in this
+# project. All entries below are leaks in gstreamer/libav internals — not in
+# ros_camera_server code.
+
+# gst_init() permanently registers a default log handler whose GSList node is
+# never freed; gstreamer has no de-init counterpart.
+leak:gst_init
+
+# gst_debug_add_log_function leaks one GSList node per registered handler:
+# the implementation copies the list, prepends, then swaps the pointer; the
+# original head node is not freed. We do call gst_debug_remove_log_function_by_data
+# in ~CameraServer to release the LogFuncEntry, but the list-node leak is in
+# gstreamer itself.
+leak:gst_debug_add_log_function
+
+# h264parse / libgstvideoparsersbad allocates av_malloc-backed scratch buffers
+# in gst_pad_push paths that are not always reaped when the pipeline is taken
+# to NULL during shutdown.
+leak:libavutil
+leak:libgstvideo

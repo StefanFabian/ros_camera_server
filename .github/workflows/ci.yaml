@@ -1,0 +1,68 @@
+name: Lint, Build & Test
+on:
+  push:
+    branches:
+      - rolling
+  pull_request:
+    branches:
+      - rolling
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  Linting:
+    name: Lint Code Base
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup
+        run: |
+          sudo apt-get update && sudo apt-get install -y clang-format cppcheck libxml2-utils
+
+      - name: Install and Run pre-commit
+        uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd
+        with:
+          extra_args: --all-files
+
+  build-and-test:
+    needs: Linting
+    strategy:
+      matrix:
+        setup:
+          - rosdistro: jazzy
+            os: ubuntu-24.04
+    runs-on: ${{ matrix.setup.os }}
+    container:
+      image: ros:${{ matrix.setup.rosdistro }}-ros-base
+    steps:
+      - name: install build tools and latest testing repo
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ros-dev-tools ros2-testing-apt-source
+          sudo apt-get update
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          path: src/repo
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          repository: StefanFabian/gstreamer_ros_babel_fish
+          path: src/gstreamer_ros_babel_fish
+      - name: rosdep
+        run: |
+          rosdep update --rosdistro ${{ matrix.setup.rosdistro }} --include-eol-distros
+          rosdep install -y --from-paths src --ignore-src --rosdistro ${{ matrix.setup.rosdistro }}
+      - name: build
+        run: |
+          source /opt/ros/${{ matrix.setup.rosdistro }}/setup.bash
+          colcon build
+      - name: test
+        run: |
+          source /opt/ros/${{ matrix.setup.rosdistro }}/setup.bash
+          source install/setup.bash
+          colcon test --packages-select ros_camera_server
+          colcon test-result --verbose
