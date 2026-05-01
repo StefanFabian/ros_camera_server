@@ -129,7 +129,10 @@ inline GstElement *createPngEncoder( const std::string &encoder, const std::stri
   return codecCreate( desc, desired, [&desc, &name]( uint32_t selected ) -> GstElement * {
     for ( size_t i = 0; i < desc.backend_count; ++i ) {
       if ( desc.backends[i].flag == selected ) {
-        return gst_element_factory_make( desc.backends[i].factory, name.c_str() );
+        GstElement *encoder = gst_element_factory_make( desc.backends[i].factory, "encoder" );
+        if ( !encoder )
+          return nullptr;
+        return createImageEncoderBin( encoder, name );
       }
     }
     return nullptr;

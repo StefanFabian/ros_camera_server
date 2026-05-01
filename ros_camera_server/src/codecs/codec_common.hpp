@@ -423,6 +423,43 @@ inline GstElement *createNvv4l2EncoderBin( const char *encoder_factory, const ch
   return encoder_bin;
 }
 
+/**
+ * @brief Wrap an image (JPEG/PNG) encoder in a bin with a videoconvert prepended.
+ *
+ * Some HW image encoders (vajpegenc, vaapijpegenc, ...) accept narrower input
+ * caps than the SW path (e.g. no packed RGB/BGR). The videoconvert is a
+ * passthrough when caps already match and otherwise converts to a format the
+ * encoder accepts.
+ *
+ * @param encoder The encoder element (already configured, ownership transferred)
+ * @param bin_name Name for the bin
+ * @return GstElement* The encoder bin
+ * @throws PipelineBuildError on failure
+ */
+inline GstElement *createImageEncoderBin( GstElement *encoder, const std::string &bin_name )
+{
+  GstElement *encoder_bin = gst_bin_new( bin_name.c_str() );
+  GstElement *convert = gst_element_factory_make( "videoconvert", "convert" );
+
+  if ( !convert ) {
+    gst_object_unref( encoder_bin );
+    gst_object_unref( encoder );
+    throw PipelineBuildError( "Failed to create videoconvert for image encoder bin" );
+  }
+
+  GstPad *sink_pad = gst_element_get_static_pad( convert, "sink" );
+  GstPad *src_pad = gst_element_get_static_pad( encoder, "src" );
+
+  gst_bin_add_many( GST_BIN( encoder_bin ), convert, encoder, nullptr );
+  gst_element_link( convert, encoder );
+  gst_element_add_pad( GST_ELEMENT( encoder_bin ), gst_ghost_pad_new( "sink", sink_pad ) );
+  gst_element_add_pad( GST_ELEMENT( encoder_bin ), gst_ghost_pad_new( "src", src_pad ) );
+  gst_object_unref( sink_pad );
+  gst_object_unref( src_pad );
+
+  return encoder_bin;
+}
+
 // ============================================================================
 // Decoder bin creation helper
 // ============================================================================

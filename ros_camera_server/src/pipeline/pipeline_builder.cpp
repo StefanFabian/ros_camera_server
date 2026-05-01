@@ -454,7 +454,15 @@ GstElement *PipelineBuilder::createScaleElement( NodeId node_id, const ScaleKey 
       const char *caps_feature = capsFeatureForMemoryFlag( overlap );
       GstElement *hw_bin = gst_bin_new( name.c_str() );
       GstElement *capsfilter = gst_element_factory_make( "capsfilter", "caps" );
-      if ( !capsfilter ) {
+      // Prepended videoconvert ensures upstream formats the HW scaler does not
+      // accept on its system-memory sink (e.g. packed RGB/BGR for vapostproc)
+      // get converted. videoconvert is passthrough when caps already match.
+      GstElement *convert = gst_element_factory_make( "videoconvert", "convert" );
+      if ( !capsfilter || !convert ) {
+        if ( capsfilter )
+          gst_object_unref( capsfilter );
+        if ( convert )
+          gst_object_unref( convert );
         gst_object_unref( scaler );
         if ( upload )
           gst_object_unref( upload );
@@ -474,8 +482,16 @@ GstElement *PipelineBuilder::createScaleElement( NodeId node_id, const ScaleKey 
       g_object_set( capsfilter, "caps", caps, nullptr );
       gst_caps_unref( caps );
 
-      // Assemble bin: [upload ->] scaler -> capsfilter
-      GstElement *first_element = upload ? upload : scaler;
+      // Assemble bin: videoconvert -> [upload ->] scaler -> capsfilter
+      if ( !gst_bin_add( GST_BIN( hw_bin ), convert ) ) {
+        gst_object_unref( hw_bin );
+        gst_object_unref( convert );
+        if ( upload )
+          gst_object_unref( upload );
+        gst_object_unref( scaler );
+        gst_object_unref( capsfilter );
+        return nullptr;
+      }
       if ( upload ) {
         if ( !gst_bin_add( GST_BIN( hw_bin ), upload ) ) {
           gst_object_unref( hw_bin );
@@ -495,7 +511,7 @@ GstElement *PipelineBuilder::createScaleElement( NodeId node_id, const ScaleKey 
           gst_object_unref( capsfilter );
           return nullptr;
         }
-        gst_element_link_many( upload, scaler, capsfilter, nullptr );
+        gst_element_link_many( convert, upload, scaler, capsfilter, nullptr );
       } else {
         if ( !gst_bin_add( GST_BIN( hw_bin ), scaler ) ||
              !gst_bin_add( GST_BIN( hw_bin ), capsfilter ) ) {
@@ -504,10 +520,10 @@ GstElement *PipelineBuilder::createScaleElement( NodeId node_id, const ScaleKey 
           gst_object_unref( capsfilter );
           return nullptr;
         }
-        gst_element_link( scaler, capsfilter );
+        gst_element_link_many( convert, scaler, capsfilter, nullptr );
       }
 
-      GstPad *sink_pad = gst_element_get_static_pad( first_element, "sink" );
+      GstPad *sink_pad = gst_element_get_static_pad( convert, "sink" );
       GstPad *src_pad = gst_element_get_static_pad( capsfilter, "src" );
       gst_element_add_pad( hw_bin, gst_ghost_pad_new( "sink", sink_pad ) );
       gst_element_add_pad( hw_bin, gst_ghost_pad_new( "src", src_pad ) );
