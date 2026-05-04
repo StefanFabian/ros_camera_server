@@ -191,6 +191,7 @@ void Ros2Output::build( int index, const Ros2OutputConfiguration &config )
                 config.camera_info_url.c_str(), "async", FALSE, nullptr );
 
   GstElement *capsfilter = nullptr;
+  GstElement *videoconvert = nullptr;
   if ( codec_ == "raw" && !config.format.empty() ) {
     // Convert ROS encoding to GStreamer format and create capsfilter
     auto it = ros_to_gst_map.find( config.format );
@@ -214,11 +215,18 @@ void Ros2Output::build( int index, const Ros2OutputConfiguration &config )
     }
     g_object_set( G_OBJECT( capsfilter ), "caps", caps, nullptr );
     gst_caps_unref( caps );
+    // Insert videoconvert so that upstream formats/memory features (e.g. NV12 +
+    // memory:VAMemory from a HW scaler) are converted to the requested sysmem RGB/etc.
+    videoconvert = gst_element_factory_make( "videoconvert", ( name + "_videoconvert" ).c_str() );
+    if ( !videoconvert ) {
+      gst_object_unref( ros_output_bin );
+      throw PipelineBuildError( "Failed to create videoconvert element for ROS2 output" );
+    }
   }
 
   if ( capsfilter ) {
-    gst_bin_add_many( ros_output_bin, queue_ros, capsfilter, ros_sink_, nullptr );
-    gst_element_link_many( queue_ros, capsfilter, ros_sink_, nullptr );
+    gst_bin_add_many( ros_output_bin, queue_ros, videoconvert, capsfilter, ros_sink_, nullptr );
+    gst_element_link_many( queue_ros, videoconvert, capsfilter, ros_sink_, nullptr );
   } else {
     gst_bin_add_many( ros_output_bin, queue_ros, ros_sink_, nullptr );
     gst_element_link_many( queue_ros, ros_sink_, nullptr );
