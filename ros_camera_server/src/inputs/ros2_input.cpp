@@ -50,7 +50,14 @@ StreamInput Ros2InputConfiguration::createInput( const rclcpp::Node::SharedPtr &
 {
   auto *input_bin = GST_BIN( gst_bin_new( "input_bin" ) );
   GstElement *src = gst_element_factory_make( "rbfimagesrc", "input" );
-  g_object_set( G_OBJECT( src ), "node", (gpointer)node.get(), "topic", topic.c_str(),
+  // image_transport convention: compressed encodings are published on
+  // `<topic>/compressed`. rbfimagesrc subscribes to the exact topic name, so
+  // when the user requests a compressed format we resolve the suffix here
+  std::string subscribe_topic = topic;
+  if ( format == Ros2InputFormat::JPEG || format == Ros2InputFormat::PNG ) {
+    subscribe_topic += "/compressed";
+  }
+  g_object_set( G_OBJECT( src ), "node", (gpointer)node.get(), "topic", subscribe_topic.c_str(),
                 "determine-framerate", TRUE, nullptr );
   if ( framerate.isValid() ) {
     g_object_set( G_OBJECT( src ), "framerate", framerate.toString().c_str(), nullptr );
