@@ -5,8 +5,8 @@ This enables you to simultaneously stream your cameras to ROS and encoded to you
 
 ## ✨ Features
 
-* 📷 **Multiple Input Sources**: V4L2 cameras, ROS 2 image topics, and SeekThermal thermal cameras
-* 📡 **Multiple Output Targets**: SRT streams (H.264/H.265), ROS 2 image topics, and WebRTC (H.264/H.265)
+* 📷 **Multiple Input Sources**: V4L2 cameras, ROS 2 image topics, SeekThermal thermal cameras, RTP/UDP (H.264/H.265/JPEG)
+* 📡 **Multiple Output Targets**: SRT streams (H.264/H.265), ROS 2 image topics, WebRTC (H.264/H.265), RTP (UDP, H.264/H.265/JPEG/raw)
 * ⚡ **Efficient Pipeline**: Shared encoder instances across multiple outputs via a pipeline graph that deduplicates processing stages
 * 🕐 **Latency Tracking**: End-to-end pipeline latency and embedded capture timestamps in custom RTP header extensions
 * 🔁 **Automatic Recovery**: Periodic health checks detect and repair failed pipelines

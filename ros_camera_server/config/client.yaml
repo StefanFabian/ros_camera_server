@@ -1,0 +1,17 @@
+# The server / client configuration files demonstrate using the camera server
+# to transmit a ros2 topic over a streaming protocol and restoring it on the
+# client side again as a ros2 topic.
+robot: "example_client"
+address: "127.0.0.1"
+signaling_port: 8443 # For webrtc outputs, the port of the signaling server
+cameras:
+  example_camera_out:
+    name: "Example Camera ROS over RTP Output"
+    input:
+      type: rtp
+      address: 127.0.0.1
+      port: 7200
+      codec: h264
+    outputs:
+      - type: ros2
+        topic: "/camera_server/example_client"

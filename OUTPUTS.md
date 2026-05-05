@@ -59,6 +59,35 @@ Examples: `topic: /camera/image_raw` -> `/camera/camera_info`, `topic: /camera_s
 Supported URL schemes include `file:///absolute/path/to/calibration.yaml` and `package://my_pkg/calibrations/front.yaml`.
 The calibration has to be for the resolution of the output, otherwise it will be rejected and not published.
 
+## RTP
+
+Sends encoded video as RTP/UDP via `rtpbin`, with RTCP sender reports and receiver reports sharing `port + 1`.
+
+```yaml
+- type: rtp
+  codec: h264                # h264 | h265 | jpeg | raw
+  host: "192.168.1.50"       # destination host (unicast) or multicast group
+  port: 5004                 # data port; RTCP send/receive use port+1
+  multicast: false           # set true to enable auto-multicast and ttl-mc on the udpsinks
+  ttl: 16                    # multicast TTL (only used when multicast: true)
+  payload_type: 96           # default 96
+  embed_capture_timestamp: true   # default true; embeds capture time in an RTP header extension
+  # encoder controls (used when the input format must be encoded):
+  encoder: auto
+  bitrate: 2000              # in kbps
+  width: 1920
+  height: 1080
+  framerate: "30/1"
+```
+
+RTP outputs pass through their configured codec when the input already provides it. When the input codec differs (e.g. H.264 input → H.265 output) or the input is raw, the pipeline transcodes through the appropriate decoder/encoder combination automatically. Receivers can use `udpsrc` directly without `rtpbin` - the data port is plain RTP.
+
+```bash
+# H.264 RTP receiver
+gst-launch-1.0 -v udpsrc port=5004 caps="application/x-rtp,media=video,encoding-name=H264,payload=96,clock-rate=90000" \
+    ! rtpjitterbuffer ! rtph264depay ! h264parse ! decodebin ! videoconvert ! autovideosink sync=false
+```
+
 ## WebRTC
 
 Streams via WebRTC using a built-in signaling server.

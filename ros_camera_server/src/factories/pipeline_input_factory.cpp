@@ -19,6 +19,7 @@
 #include "../logging.hpp"
 #include "ros_camera_server/inputs/openseekthermal_input.hpp"
 #include "ros_camera_server/inputs/ros2_input.hpp"
+#include "ros_camera_server/inputs/rtp_input.hpp"
 #include "ros_camera_server/inputs/v4l2_input.hpp"
 
 namespace ros_camera_server
@@ -33,6 +34,7 @@ void PipelineInputFactory::registerDefaultInputs()
 
   registerInput( "openseekthermal", OpenSeekThermalInputConfiguration::from_yaml_shared );
   registerInput( "ros2", Ros2InputConfiguration::from_yaml_shared );
+  registerInput( "rtp", RtpInputConfiguration::from_yaml_shared );
   registerInput( "v4l2", V4l2InputConfiguration::from_yaml_shared );
 }
 

@@ -116,6 +116,11 @@ void PipelineMonitor::process( DiagnosticRecord &record )
     return;
   }
 
+  if ( auto rewritten = detail::rewriteGStreamerMessage( record.message, record.debug_info );
+       !rewritten.empty() ) {
+    record.message = rewritten;
+  }
+
   std::string suffix;
   if ( !shouldLogRecord( record, suffix ) ) {
     return;

@@ -71,7 +71,7 @@ private:
     std::chrono::steady_clock::time_point last_logged;
   };
 
-  static constexpr size_t MAX_PENDING_RECORDS = 64;
+  static constexpr size_t MAX_PENDING_RECORDS = 256;
   static constexpr size_t MAX_COALESCED_ENTRIES = 128;
   static constexpr auto REPEAT_LOG_INTERVAL = std::chrono::seconds( 10 );
 

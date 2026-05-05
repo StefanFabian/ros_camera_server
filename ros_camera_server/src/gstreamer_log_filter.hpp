@@ -89,6 +89,38 @@ inline bool shouldIgnoreGStreamerLog( std::string_view category, std::string_vie
 inline bool hasPrefix( std::string_view message, std::string_view prefix )
 { return message.size() >= prefix.size() && message.compare( 0, prefix.size(), prefix ) == 0; }
 
+// Each rule rewrites a cryptic GStreamer error/warning into a friendlier explanation. The matcher
+// receives the raw bus/log message text and the GStreamer-supplied debug_info string (file, line,
+// function, element path) so it can disambiguate generic messages by their originating function.
+struct GStreamerMessageRewrite {
+  bool ( *matches )( std::string_view message, std::string_view debug_info );
+  std::string_view replacement;
+};
+
+inline constexpr std::array<GStreamerMessageRewrite, 1> gstreamer_message_rewrites = { {
+    // rtpjpegpay rejects JPEGs whose chroma subsampling isn't YUV 4:2:0 / 4:2:2 (RFC 2435).
+    // The error text is just "Invalid component"; the originating function in debug_info is
+    // what tells us this is the rtpjpegpay SOF parser.
+    { []( std::string_view message, std::string_view debug_info ) {
+       return message == "Invalid component" &&
+              debug_info.find( "gst_rtp_jpeg_pay_read_sof" ) != std::string_view::npos;
+     },
+      "rtpjpegpay rejected the JPEG: RFC 2435 only supports YUV 4:2:0 or 4:2:2 chroma "
+      "subsampling. Re-encode the source as a baseline JPEG with I420 or Y42B "
+      "(e.g. videoconvert ! jpegenc) before payloading." },
+} };
+
+// Returns a friendlier replacement for the message, or an empty view if no rule matches.
+inline std::string_view rewriteGStreamerMessage( std::string_view message,
+                                                 std::string_view debug_info )
+{
+  for ( const auto &rewrite : gstreamer_message_rewrites ) {
+    if ( rewrite.matches( message, debug_info ) )
+      return rewrite.replacement;
+  }
+  return {};
+}
+
 } // namespace detail
 } // namespace ros_camera_server
 

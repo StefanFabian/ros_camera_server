@@ -113,8 +113,8 @@ TEST_F( PipelineMonitorTest, RingDropsOldestWhenOverflowing )
 {
   RecordingMonitor monitor;
 
-  // Push more than MAX_PENDING_RECORDS (64) to force ring drop-oldest.
-  constexpr int kPushes = 200;
+  // Push more than MAX_PENDING_RECORDS (256) to force ring drop-oldest.
+  constexpr int kPushes = 400;
   for ( int i = 0; i < kPushes; ++i ) {
     GError *err = makeError( ( "msg_" + std::to_string( i ) ).c_str() );
     monitor.observeBusWarning( "cam_overflow", nullptr, err, nullptr );
@@ -128,7 +128,7 @@ TEST_F( PipelineMonitorTest, RingDropsOldestWhenOverflowing )
   // The newest record is kept (drop-oldest, not drop-newest).
   bool sawNewest = false;
   for ( const auto &rec : monitor.emitted ) {
-    if ( rec.message.find( "msg_199" ) != std::string::npos ) {
+    if ( rec.message.find( "msg_399" ) != std::string::npos ) {
       sawNewest = true;
       break;
     }
@@ -166,6 +166,37 @@ TEST_F( PipelineMonitorTest, BusMessageNotDroppedWithoutDebugLogContext )
 
   monitor.processLogMessages();
   ASSERT_EQ( monitor.emitted.size(), 1u );
+}
+
+TEST_F( PipelineMonitorTest, RtpJpegPayInvalidComponentIsRewritten )
+{
+  RecordingMonitor monitor;
+  GError *err = makeError( "Invalid component" );
+  monitor.observeBusError(
+      "cam_a", nullptr, err,
+      "../gst/rtp/gstrtpjpegpay.c(627): gst_rtp_jpeg_pay_read_sof (): "
+      "/GstPipeline:cam_a/GstBin:rtp_output_bin_0/GstRtpJPEGPay:rtp_output_bin_0_pay" );
+  g_error_free( err );
+
+  monitor.processLogMessages();
+  ASSERT_EQ( monitor.emitted.size(), 1u );
+  EXPECT_NE( monitor.emitted[0].message.find( "rtpjpegpay" ), std::string::npos );
+  EXPECT_NE( monitor.emitted[0].message.find( "4:2:0" ), std::string::npos );
+  // The opaque original message must not appear as the surfaced cause.
+  EXPECT_EQ( monitor.emitted[0].message.find( ": Invalid component " ), std::string::npos );
+}
+
+TEST_F( PipelineMonitorTest, InvalidComponentFromUnrelatedSourceIsNotRewritten )
+{
+  RecordingMonitor monitor;
+  GError *err = makeError( "Invalid component" );
+  monitor.observeBusError( "cam_a", nullptr, err, "some/other/element.c(42): foo_bar ()" );
+  g_error_free( err );
+
+  monitor.processLogMessages();
+  ASSERT_EQ( monitor.emitted.size(), 1u );
+  EXPECT_NE( monitor.emitted[0].message.find( "Invalid component" ), std::string::npos );
+  EXPECT_EQ( monitor.emitted[0].message.find( "rtpjpegpay" ), std::string::npos );
 }
 
 TEST_F( PipelineMonitorTest, CoalescedSizeBoundedAcrossManyDistinctMessages )

@@ -28,11 +28,14 @@ set(SOURCES
   src/diagnostic_context.cpp
   src/helpers/reference_timestamp_helpers.cpp
   src/helpers/rtp_timestamp_extension.cpp
+  src/helpers/video_codec_info.cpp
   src/inputs/openseekthermal_input.cpp
   src/inputs/ros2_input.cpp
+  src/inputs/rtp_input.cpp
   src/inputs/v4l2_input.cpp
   src/outputs/pipeline_output.cpp
   src/outputs/ros2_output.cpp
+  src/outputs/rtp_output.cpp
   src/outputs/srt_output.cpp
   src/outputs/webrtc_output.cpp
   src/webrtc/signaling_server.cpp

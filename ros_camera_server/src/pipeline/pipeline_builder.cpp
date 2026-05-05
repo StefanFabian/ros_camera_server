@@ -465,11 +465,20 @@ GstElement *PipelineBuilder::createScaleElement( NodeId node_id, const ScaleKey 
       // accept on its system-memory sink (e.g. packed RGB/BGR for vapostproc)
       // get converted. videoconvert is passthrough when caps already match.
       GstElement *convert = gst_element_factory_make( "videoconvert", "convert" );
-      if ( !capsfilter || !convert ) {
+      // Intermediate capsfilter pinning the videoconvert -> scaler link to plain
+      // video/x-raw, format=NV12 in system memory. Without it, caps negotiation
+      // walks the downstream capsfilter (NV12 + memory:VAMemory/etc.) backward
+      // through the HW scaler, which then propagates the memory feature onto its
+      // sink template — videoconvert can only output system memory and link
+      // negotiation fails.
+      GstElement *convert_caps = gst_element_factory_make( "capsfilter", "convert_caps" );
+      if ( !capsfilter || !convert || !convert_caps ) {
         if ( capsfilter )
           gst_object_unref( capsfilter );
         if ( convert )
           gst_object_unref( convert );
+        if ( convert_caps )
+          gst_object_unref( convert_caps );
         gst_object_unref( scaler );
         if ( upload )
           gst_object_unref( upload );
@@ -489,16 +498,33 @@ GstElement *PipelineBuilder::createScaleElement( NodeId node_id, const ScaleKey 
       g_object_set( capsfilter, "caps", caps, nullptr );
       gst_caps_unref( caps );
 
-      // Assemble bin: videoconvert -> [upload ->] scaler -> capsfilter
+      // Plain system-memory NV12 caps for the videoconvert -> scaler hop.
+      GstCaps *convert_out_caps =
+          gst_caps_new_simple( "video/x-raw", "format", G_TYPE_STRING, "NV12", nullptr );
+      g_object_set( convert_caps, "caps", convert_out_caps, nullptr );
+      gst_caps_unref( convert_out_caps );
+
+      // Assemble bin: videoconvert -> convert_caps -> [upload ->] scaler -> capsfilter
       if ( !gst_bin_add( GST_BIN( hw_bin ), convert ) ) {
         gst_object_unref( hw_bin );
         gst_object_unref( convert );
+        gst_object_unref( convert_caps );
         if ( upload )
           gst_object_unref( upload );
         gst_object_unref( scaler );
         gst_object_unref( capsfilter );
         return nullptr;
       }
+      if ( !gst_bin_add( GST_BIN( hw_bin ), convert_caps ) ) {
+        gst_object_unref( hw_bin );
+        gst_object_unref( convert_caps );
+        if ( upload )
+          gst_object_unref( upload );
+        gst_object_unref( scaler );
+        gst_object_unref( capsfilter );
+        return nullptr;
+      }
+      gboolean linked = FALSE;
       if ( upload ) {
         if ( !gst_bin_add( GST_BIN( hw_bin ), upload ) ) {
           gst_object_unref( hw_bin );
@@ -518,7 +544,7 @@ GstElement *PipelineBuilder::createScaleElement( NodeId node_id, const ScaleKey 
           gst_object_unref( capsfilter );
           return nullptr;
         }
-        gst_element_link_many( convert, upload, scaler, capsfilter, nullptr );
+        linked = gst_element_link_many( convert, convert_caps, upload, scaler, capsfilter, nullptr );
       } else {
         if ( !gst_bin_add( GST_BIN( hw_bin ), scaler ) ||
              !gst_bin_add( GST_BIN( hw_bin ), capsfilter ) ) {
@@ -527,7 +553,15 @@ GstElement *PipelineBuilder::createScaleElement( NodeId node_id, const ScaleKey 
           gst_object_unref( capsfilter );
           return nullptr;
         }
-        gst_element_link_many( convert, scaler, capsfilter, nullptr );
+        linked = gst_element_link_many( convert, convert_caps, scaler, capsfilter, nullptr );
+      }
+      if ( !linked ) {
+        SERVER_LOG_ERROR(
+            "Failed to link HW scaler bin elements (convert -> convert_caps -> [upload ->] "
+            "%s -> capsfilter) for %s",
+            candidate.factory, name.c_str() );
+        gst_object_unref( hw_bin );
+        return nullptr;
       }
 
       GstPad *sink_pad = gst_element_get_static_pad( convert, "sink" );

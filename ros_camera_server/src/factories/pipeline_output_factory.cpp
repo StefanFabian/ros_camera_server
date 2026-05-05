@@ -18,6 +18,7 @@
 #include "ros_camera_server/factories/pipeline_output_factory.hpp"
 #include "../logging.hpp"
 #include "ros_camera_server/outputs/ros2_output.hpp"
+#include "ros_camera_server/outputs/rtp_output.hpp"
 #include "ros_camera_server/outputs/srt_output.hpp"
 #include "ros_camera_server/outputs/webrtc_output.hpp"
 
@@ -32,6 +33,7 @@ void PipelineOutputFactory::registerDefaultOutputs()
   registered = true;
 
   registerOutput( "ros2", Ros2OutputConfiguration::from_yaml_shared );
+  registerOutput( "rtp", RtpOutputConfiguration::from_yaml_shared );
   registerOutput( "srt", SrtOutputConfiguration::from_yaml_shared );
   registerOutput( "webrtc", WebrtcOutputConfiguration::from_yaml_shared );
 }
