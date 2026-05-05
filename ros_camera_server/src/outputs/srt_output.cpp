@@ -110,16 +110,9 @@ std::shared_ptr<SrtOutputConfiguration>
 SrtOutputConfiguration::from_yaml_shared( const YAML::Node &config )
 {
   auto result = std::make_shared<SrtOutputConfiguration>();
+  result->loadSharedFromYaml( config );
   result->codec = config["codec"].as<std::string>( "h264" );
   result->supported_input_formats = { stream_format_from_codec( result->codec ) };
-  result->encoder = config["encoder"].as<std::string>( "auto" );
-  result->framerate = Framerate( config["framerate"].as<std::string>( "" ) );
-  if ( config["width"] )
-    result->width = config["width"].as<int>();
-  if ( config["height"] )
-    result->height = config["height"].as<int>();
-  if ( config["bitrate"] )
-    result->bitrate = config["bitrate"].as<int>();
   if ( config["latency_ms"] )
     result->latency_ms = config["latency_ms"].as<int>();
   result->port = config["port"].as<int>();

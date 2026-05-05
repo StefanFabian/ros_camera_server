@@ -110,6 +110,7 @@ std::shared_ptr<Ros2OutputConfiguration>
 Ros2OutputConfiguration::from_yaml_shared( const YAML::Node &config )
 {
   auto result = std::make_shared<Ros2OutputConfiguration>();
+  result->loadSharedFromYaml( config );
   result->topic = config["topic"].as<std::string>();
   result->codec = config["codec"].as<std::string>( "auto" );
   if ( result->codec == "auto" ) {
@@ -124,11 +125,6 @@ Ros2OutputConfiguration::from_yaml_shared( const YAML::Node &config )
   result->format = config["format"].as<std::string>( "" );
   result->frame_id = config["frame_id"].as<std::string>( "" );
   result->camera_info_url = config["camera_info_url"].as<std::string>( "" );
-  result->framerate = Framerate( config["framerate"].as<std::string>( "" ) );
-  if ( config["width"] )
-    result->width = config["width"].as<int>();
-  if ( config["height"] )
-    result->height = config["height"].as<int>();
   return result;
 }
 

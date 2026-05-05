@@ -58,6 +58,18 @@ input:
   # framerate: "15/1"   # Optional but recommended; auto-detected from the first 5 frames if omitted
 ```
 
+## Decoder selection
+
+When an input produces an encoded format (H.264, H.265, JPEG, PNG) and a downstream consumer needs raw video — for example a ROS 2 `format: raw` output, a different output codec, or a scaling/framerate transform — the pipeline inserts a decoder. The optional `decoder:` field selects the preferred backend using the same syntax as the output `encoder:` field (see [OUTPUTS.md](OUTPUTS.md)). Pipe-delimited tokens express priority order; `auto` (the default) tries hardware backends first and falls back to software, hot-swapping at runtime if a backend stops producing frames.
+
+```yaml
+decoder: auto       # default — VA / NV / NVV4L2 / VAAPI hardware first, software fallback
+decoder: sw         # force software (avdec_h264 / openh264dec / x265dec / pngdec / etc.)
+decoder: nv|sw      # prefer NVIDIA, then any software backend
+```
+
+The field is ignored when no decoder is needed (e.g. raw inputs, or codec-passthrough outputs).
+
 ## SeekThermal
 
 Captures from a SeekThermal camera via the `openseekthermalsrc` GStreamer element.

@@ -74,7 +74,7 @@ struct SinkConfig {
 
 // Node configuration types
 using NodeConfig =
-    std::variant<SourceConfig, StreamFormat, FramerateKey, ScaleKey, EncoderKey, SinkConfig>;
+    std::variant<SourceConfig, DecoderKey, FramerateKey, ScaleKey, EncoderKey, SinkConfig>;
 
 struct GraphNode {
   NodeId id;
@@ -95,7 +95,8 @@ struct PipelineGraph {
 
   // Build the graph from input format and output configurations
   static PipelineGraph build( StreamFormat input_format, const std::string &input_type,
-                              const std::vector<std::shared_ptr<OutputConfiguration>> &outputs );
+                              const std::vector<std::shared_ptr<OutputConfiguration>> &outputs,
+                              const std::string &input_decoder = "auto" );
 
   // Resolve the actual StreamFormat that a given sink node receives
   StreamFormat resolveOutputFormat( NodeId sink_id, StreamFormat input_format ) const;

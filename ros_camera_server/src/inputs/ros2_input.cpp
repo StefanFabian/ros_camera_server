@@ -39,8 +39,8 @@ Ros2InputConfiguration::from_yaml_shared( const YAML::Node &config )
 {
   auto result = std::make_shared<Ros2InputConfiguration>();
   result->type = "ros2";
+  result->loadSharedFromYaml( config );
   result->topic = config["topic"].as<std::string>();
-  result->framerate = Framerate( config["framerate"].as<std::string>( "0/1" ) );
   result->format = format_from_string( config["format"].as<std::string>( "raw" ) );
   return result;
 }

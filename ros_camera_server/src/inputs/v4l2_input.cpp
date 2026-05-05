@@ -32,11 +32,11 @@ V4l2InputConfiguration::from_yaml_shared( const YAML::Node &config )
 {
   auto result = std::make_shared<V4l2InputConfiguration>();
   result->type = "v4l2";
+  result->loadSharedFromYaml( config );
   result->device = config["device"].as<std::string>();
   result->media_type = config["media_type"].as<std::string>( "" );
   result->width = config["width"].as<int>( -1 );
   result->height = config["height"].as<int>( -1 );
-  result->framerate = Framerate( config["framerate"].as<std::string>( "" ) );
 
   if ( config["controls"] && config["controls"].IsMap() ) {
     for ( const auto &kvp : config["controls"] ) {

@@ -313,10 +313,10 @@ GstElement *PipelineBuilder::createElementForNode( const GraphNode &node )
 {
   switch ( node.type ) {
   case GraphNodeType::Decoder: {
-    StreamFormat format = std::get<StreamFormat>( node.config );
-    SERVER_LOG_DEBUG( "Node %u: creating Decoder for format '%s'", node.id,
-                      to_string( format ).c_str() );
-    return createDecoderElement( node.id, format );
+    const DecoderKey &key = std::get<DecoderKey>( node.config );
+    SERVER_LOG_DEBUG( "Node %u: creating Decoder for format '%s' (decoder='%s')", node.id,
+                      to_string( key.format ).c_str(), key.decoder.c_str() );
+    return createDecoderElement( node.id, key );
   }
   case GraphNodeType::FramerateLimit: {
     const FramerateKey &key = std::get<FramerateKey>( node.config );
@@ -349,16 +349,23 @@ GstElement *PipelineBuilder::createElementForNode( const GraphNode &node )
   }
 }
 
-GstElement *PipelineBuilder::createDecoderElement( NodeId node_id, StreamFormat format )
+GstElement *PipelineBuilder::createDecoderElement( NodeId node_id, const DecoderKey &key )
 {
   std::string name = "decoder_node_" + std::to_string( node_id );
-  switch ( format ) {
+  switch ( key.format ) {
   case StreamFormat::JPEG:
-    return createSmartVideoDecoder( name, jpegDecoderDescriptor() );
+    return createSmartVideoDecoder( name, jpegDecoderDescriptor(),
+                                    codecFromString( jpegDecoderDescriptor(), key.decoder ) );
   case StreamFormat::PNG:
-    return createPngDecoder( name );
+    return createPngDecoder( name, key.decoder );
+  case StreamFormat::H264:
+    return createSmartVideoDecoder( name, h264DecoderDescriptor(),
+                                    codecFromString( h264DecoderDescriptor(), key.decoder ) );
+  case StreamFormat::H265:
+    return createSmartVideoDecoder( name, h265DecoderDescriptor(),
+                                    codecFromString( h265DecoderDescriptor(), key.decoder ) );
   default:
-    throw PipelineBuildError( "Unsupported decoder format: " + to_string( format ) );
+    throw PipelineBuildError( "Unsupported decoder format: " + to_string( key.format ) );
   }
 }
 

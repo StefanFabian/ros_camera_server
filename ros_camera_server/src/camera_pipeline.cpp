@@ -95,8 +95,8 @@ void CameraPipeline::buildPipeline()
   gst_object_unref( input_src_pad );
 
   // 2. Build pipeline graph
-  PipelineGraph graph =
-      PipelineGraph::build( input_.format, configuration_.input->type, configuration_.outputs );
+  PipelineGraph graph = PipelineGraph::build( input_.format, configuration_.input->type,
+                                              configuration_.outputs, configuration_.input->decoder );
   SERVER_LOG_INFO_STREAM( "Camera '" << configuration_.id << "' " << graph.toString() );
 
   // 3. Resolve actual codec for each output (replaces "auto" with actual transport type)

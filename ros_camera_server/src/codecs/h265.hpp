@@ -101,6 +101,8 @@ static constexpr CodecDescriptor h265_decoder_desc = {
     std::size( h265_decoder_aliases ),
 };
 
+inline const CodecDescriptor &h265DecoderDescriptor() { return h265_decoder_desc; }
+
 // ============================================================================
 // H265 Encoder creation
 // ============================================================================

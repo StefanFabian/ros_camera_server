@@ -26,6 +26,7 @@ OpenSeekThermalInputConfiguration::from_yaml_shared( const YAML::Node &config )
 {
   auto result = std::make_shared<OpenSeekThermalInputConfiguration>();
   result->type = "openseekthermal";
+  result->loadSharedFromYaml( config );
   result->port = config["device"].as<std::string>( "" );
   result->serial = config["serial"].as<std::string>( "" );
   return result;

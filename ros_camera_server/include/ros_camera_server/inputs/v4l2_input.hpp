@@ -32,7 +32,6 @@ public:
   std::string media_type;
   int width;
   int height;
-  Framerate framerate;
   std::map<std::string, int> controls; // Initial V4L2 control values from config
 
   StreamInput createInput( const rclcpp::Node::SharedPtr &,

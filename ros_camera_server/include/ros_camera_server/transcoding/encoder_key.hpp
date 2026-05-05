@@ -52,11 +52,17 @@ struct EncoderKey {
 
 /**
  * @brief Key for identifying unique decoder configurations.
+ *
+ * Two pipelines requiring the same source format and decoder backend preference
+ * can share a decoder node. The decoder field accepts the same syntax as the
+ * encoder field (e.g. "auto", "va", "nv|sw").
  */
 struct DecoderKey {
-  std::string codec; // "jpeg", "png"
+  StreamFormat format;
+  std::string decoder; // Decoder preference (e.g., "auto", "va", "nv|sw")
 
-  bool operator==( const DecoderKey &other ) const { return codec == other.codec; }
+  bool operator==( const DecoderKey &other ) const
+  { return format == other.format && decoder == other.decoder; }
 
   bool operator!=( const DecoderKey &other ) const { return !( *this == other ); }
 };
@@ -82,7 +88,10 @@ struct std::hash<ros_camera_server::EncoderKey> {
 template<>
 struct std::hash<ros_camera_server::DecoderKey> {
   std::size_t operator()( const ros_camera_server::DecoderKey &key ) const
-  { return std::hash<std::string>()( key.codec ); }
+  {
+    return std::hash<int>()( static_cast<int>( key.format ) ) ^
+           ( std::hash<std::string>()( key.decoder ) << 1 );
+  }
 };
 
 #endif // ROS_CAMERA_SERVER_ENCODER_KEY_HPP

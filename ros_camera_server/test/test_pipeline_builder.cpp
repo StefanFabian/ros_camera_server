@@ -110,6 +110,71 @@ TEST_F( PipelineGraphTest, JpegInputRequiresDecoder )
   EXPECT_EQ( countNodesByType( graph, GraphNodeType::Decoder ), 1 );
 }
 
+TEST_F( PipelineGraphTest, H264InputToRawNeedsDecoder )
+{
+  std::vector<std::shared_ptr<OutputConfiguration>> outputs;
+  outputs.push_back( createOutputConfig( StreamFormat::RAW ) );
+
+  PipelineGraph graph = PipelineGraph::build( StreamFormat::H264, "rtp", outputs );
+
+  EXPECT_EQ( countNodesByType( graph, GraphNodeType::Decoder ), 1 );
+  auto decoder_id = findNodeByType( graph, GraphNodeType::Decoder );
+  ASSERT_TRUE( decoder_id.has_value() );
+  const auto &key = std::get<DecoderKey>( graph.getNode( *decoder_id ).config );
+  EXPECT_EQ( key.format, StreamFormat::H264 );
+  EXPECT_EQ( key.decoder, "auto" );
+}
+
+TEST_F( PipelineGraphTest, H265InputToRawNeedsDecoder )
+{
+  std::vector<std::shared_ptr<OutputConfiguration>> outputs;
+  outputs.push_back( createOutputConfig( StreamFormat::RAW ) );
+
+  PipelineGraph graph = PipelineGraph::build( StreamFormat::H265, "rtp", outputs );
+
+  EXPECT_EQ( countNodesByType( graph, GraphNodeType::Decoder ), 1 );
+  auto decoder_id = findNodeByType( graph, GraphNodeType::Decoder );
+  ASSERT_TRUE( decoder_id.has_value() );
+  const auto &key = std::get<DecoderKey>( graph.getNode( *decoder_id ).config );
+  EXPECT_EQ( key.format, StreamFormat::H265 );
+}
+
+TEST_F( PipelineGraphTest, H264PassthroughNoDecoder )
+{
+  // H264 input to H264 output without transforms should bypass decoding entirely.
+  std::vector<std::shared_ptr<OutputConfiguration>> outputs;
+  outputs.push_back( createOutputConfig( StreamFormat::H264 ) );
+
+  PipelineGraph graph = PipelineGraph::build( StreamFormat::H264, "rtp", outputs );
+
+  EXPECT_EQ( countNodesByType( graph, GraphNodeType::Decoder ), 0 );
+  EXPECT_EQ( countNodesByType( graph, GraphNodeType::Encoder ), 0 );
+}
+
+TEST_F( PipelineGraphTest, H264TranscodeToH265InsertsDecodeAndEncode )
+{
+  std::vector<std::shared_ptr<OutputConfiguration>> outputs;
+  outputs.push_back( createOutputConfig( StreamFormat::H265, 640, 480, Framerate( 30, 1 ) ) );
+
+  PipelineGraph graph = PipelineGraph::build( StreamFormat::H264, "rtp", outputs );
+
+  EXPECT_EQ( countNodesByType( graph, GraphNodeType::Decoder ), 1 );
+  EXPECT_EQ( countNodesByType( graph, GraphNodeType::Encoder ), 1 );
+}
+
+TEST_F( PipelineGraphTest, DecoderPreferencePropagatesToDecoderKey )
+{
+  std::vector<std::shared_ptr<OutputConfiguration>> outputs;
+  outputs.push_back( createOutputConfig( StreamFormat::RAW ) );
+
+  PipelineGraph graph = PipelineGraph::build( StreamFormat::H264, "rtp", outputs, "nv|sw" );
+
+  auto decoder_id = findNodeByType( graph, GraphNodeType::Decoder );
+  ASSERT_TRUE( decoder_id.has_value() );
+  const auto &key = std::get<DecoderKey>( graph.getNode( *decoder_id ).config );
+  EXPECT_EQ( key.decoder, "nv|sw" );
+}
+
 TEST_F( PipelineGraphTest, H264OutputRequiresEncoder )
 {
   std::vector<std::shared_ptr<OutputConfiguration>> outputs;

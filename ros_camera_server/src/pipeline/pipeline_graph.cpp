@@ -72,7 +72,8 @@ StreamFormat targetCompressedFormat( const OutputConfiguration &config )
 }
 
 // Phase 1: Build a simple linear chain for a single output
-OutputChain computeChain( int index, const OutputConfiguration &config, StreamFormat input_format )
+OutputChain computeChain( int index, const OutputConfiguration &config, StreamFormat input_format,
+                          const std::string &input_decoder )
 {
   OutputChain chain;
   chain.output_index = index;
@@ -118,7 +119,7 @@ OutputChain computeChain( int index, const OutputConfiguration &config, StreamFo
   }
 
   if ( needs_decode ) {
-    chain.elements.push_back( { GraphNodeType::Decoder, input_format } );
+    chain.elements.push_back( { GraphNodeType::Decoder, DecoderKey{ input_format, input_decoder } } );
   }
 
   if ( needs_scale ) {
@@ -298,8 +299,9 @@ void optimizeFramerateScaleGroups( std::vector<OutputChain> &chains )
 class GraphBuilder
 {
 public:
-  GraphBuilder( StreamFormat input_format, std::string input_type )
-      : input_format_( input_format ), input_type_( std::move( input_type ) )
+  GraphBuilder( StreamFormat input_format, std::string input_type, std::string input_decoder )
+      : input_format_( input_format ), input_type_( std::move( input_type ) ),
+        input_decoder_( std::move( input_decoder ) )
   {
   }
 
@@ -316,7 +318,8 @@ public:
     // Phase 1: Build simple per-output chains
     std::vector<OutputChain> chains;
     for ( size_t i = 0; i < outputs.size(); ++i ) {
-      chains.push_back( computeChain( static_cast<int>( i ), *outputs[i], input_format_ ) );
+      chains.push_back(
+          computeChain( static_cast<int>( i ), *outputs[i], input_format_, input_decoder_ ) );
     }
 
     // Phase 2: Optimize and materialize
@@ -395,6 +398,7 @@ private:
 
   StreamFormat input_format_;
   std::string input_type_;
+  std::string input_decoder_;
   PipelineGraph graph_;
   NodeId next_node_id_ = 0;
 };
@@ -402,9 +406,10 @@ private:
 } // namespace
 
 PipelineGraph PipelineGraph::build( StreamFormat input_format, const std::string &input_type,
-                                    const std::vector<std::shared_ptr<OutputConfiguration>> &outputs )
+                                    const std::vector<std::shared_ptr<OutputConfiguration>> &outputs,
+                                    const std::string &input_decoder )
 {
-  GraphBuilder builder( input_format, input_type );
+  GraphBuilder builder( input_format, input_type, input_decoder );
   return builder.build( outputs );
 }
 
@@ -452,8 +457,12 @@ std::string PipelineGraph::toString() const
       return str_id + " Source" + ( cfg.type.empty() ? "" : "(" + cfg.type + ")" );
     }
     case GraphNodeType::Decoder: {
-      StreamFormat fmt = std::get<StreamFormat>( node.config );
-      return str_id + " Decode(" + ros_camera_server::to_string( fmt ) + ")";
+      const DecoderKey &key = std::get<DecoderKey>( node.config );
+      std::string s = str_id + " Decode(" + ros_camera_server::to_string( key.format );
+      if ( !key.decoder.empty() && key.decoder != "auto" )
+        s += ", " + key.decoder;
+      s += ")";
+      return s;
     }
     case GraphNodeType::FramerateLimit: {
       const FramerateKey &key = std::get<FramerateKey>( node.config );

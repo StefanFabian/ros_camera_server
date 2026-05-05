@@ -148,6 +148,14 @@ public:
 
   std::string type;
   Framerate framerate;
+  /// Decoder backend preference (e.g. "auto", "va|sw"). Used when the input
+  /// produces an encoded format and the pipeline requires raw video.
+  std::string decoder = "auto";
+
+  /// Load fields shared by every input (framerate, decoder) from yaml.
+  /// Derived from_yaml_shared methods call this so a new shared field only
+  /// needs to be added in one place.
+  void loadSharedFromYaml( const YAML::Node &config );
 
   [[nodiscard]] virtual StreamInput createInput( const rclcpp::Node::SharedPtr &,
                                                  const std::string &camera_id ) const = 0;
@@ -168,6 +176,12 @@ public:
   int height = std::numeric_limits<int>::max();
   std::vector<StreamFormat> supported_input_formats;
   StreamFormat selected_input_format = StreamFormat::INVALID;
+
+  /// Load fields shared by every output (encoder, framerate, width, height,
+  /// bitrate) from yaml. Derived from_yaml_shared methods call this so a new
+  /// shared field only needs to be added in one place. `codec` is excluded
+  /// because defaults and validation are output-specific.
+  void loadSharedFromYaml( const YAML::Node &config );
 
   virtual YAML::Node toYaml() const = 0;
 

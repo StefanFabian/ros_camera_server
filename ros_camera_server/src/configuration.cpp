@@ -63,6 +63,24 @@ std::string Framerate::toString() const
 
 bool Framerate::isValid() const { return numerator > 0 && denominator > 0; }
 
+void InputConfiguration::loadSharedFromYaml( const YAML::Node &config )
+{
+  framerate = Framerate( config["framerate"].as<std::string>( "" ) );
+  decoder = config["decoder"].as<std::string>( "auto" );
+}
+
+void OutputConfiguration::loadSharedFromYaml( const YAML::Node &config )
+{
+  encoder = config["encoder"].as<std::string>( "auto" );
+  framerate = Framerate( config["framerate"].as<std::string>( "" ) );
+  if ( config["width"] )
+    width = config["width"].as<int>();
+  if ( config["height"] )
+    height = config["height"].as<int>();
+  if ( config["bitrate"] )
+    bitrate = config["bitrate"].as<int>();
+}
+
 EncoderKey OutputConfiguration::createEncoderKey() const
 {
   EncoderKey key;

@@ -110,7 +110,7 @@ private:
   GstElement *createElementForNode( const GraphNode &node );
 
   // Create specific element types
-  GstElement *createDecoderElement( NodeId node_id, StreamFormat format );
+  GstElement *createDecoderElement( NodeId node_id, const DecoderKey &key );
   GstElement *createFramerateLimiterElement( NodeId node_id, const FramerateKey &key );
   GstElement *createScaleElement( NodeId node_id, const ScaleKey &key, MemoryFeature target_memory );
   GstElement *createEncoderElement( NodeId node_id, const EncoderKey &key );
