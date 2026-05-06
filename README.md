@@ -1,3 +1,5 @@
+![ROS Camera Server Logo](.github/ros_camera_server_logo.webp)
+
 # ROS Camera Server
 
 **ROS Camera Server** is a ROS 2 camera streaming hub that ingests video from multiple sources, transcodes it via GStreamer, and distributes it to multiple outputs - optimized for low latency and compute efficiency.
@@ -96,11 +98,11 @@ See [ros_camera_server/config/config.yaml](ros_camera_server/config/config.yaml)
 
 ### 📷 Inputs
 
-Supported input types: **V4L2**, **ROS 2 image topics**, **SeekThermal**. See [INPUTS.md](INPUTS.md) for the full reference.
+Supported input types: **V4L2**, **ROS 2 image topics**, **RTP**, **SeekThermal**. See [INPUTS.md](INPUTS.md) for the full reference.
 
 ### 📡 Outputs
 
-Supported output types: **SRT** (H.264/H.265), **ROS 2 image topics**, **WebRTC** (H.264/H.265). See [OUTPUTS.md](OUTPUTS.md) for the full reference.
+Supported output types: **ROS 2 image topics**, **RTP** (H.264/H.265), **SRT** (H.264/H.265), **WebRTC** (H.264/H.265). See [OUTPUTS.md](OUTPUTS.md) for the full reference.
 
 ## 🎬 Viewing an SRT Stream
 
