@@ -19,6 +19,8 @@
 #include "pipeline/pipeline_graph.hpp"
 #include "pipeline_test_helpers.hpp"
 
+#include <atomic>
+#include <gst/gst.h>
 #include <gtest/gtest.h>
 
 using namespace ros_camera_server;
@@ -516,6 +518,115 @@ TEST_F( PipelineGraphTest, UniformEncodersAllowHwScaling )
   // All downstream encoders are h264 - compatible for HW scaling
   EXPECT_GE( encoders.size(), 1u );
   EXPECT_FALSE( has_raw_sink );
+}
+
+// -----------------------------------------------------------------------------
+// Behavioral framerate-limiter tests
+//
+// Drives `createFramerateLimiterElement` with a synthetic source whose PTS are
+// fully deterministic (videotestsrc with `is-live=false` emits buffers as fast
+// as possible, with PTS computed from the configured framerate). Buffer drops
+// are decided by videorate from PTS deltas, so total runtime is whatever it
+// takes the test process to push N buffers — milliseconds — but the *count* of
+// buffers reaching the sink is deterministic.
+// -----------------------------------------------------------------------------
+class FramerateLimiterRuntimeTest : public ::testing::Test
+{
+protected:
+  static void SetUpTestSuite() { gst_init( nullptr, nullptr ); }
+
+  // Build and run: src_desc ! [limiter] ! fakesink, returning buffers seen at
+  // the sink. `src_desc` is a gst-launch-style description producing the
+  // synthetic input. The limiter is created via the production code path.
+  static int countLimitedBuffers( const std::string &src_desc, const FramerateKey &key )
+  {
+    GError *error = nullptr;
+    GstElement *pipeline = gst_pipeline_new( "fr_test" );
+    GstElement *src_bin = gst_parse_bin_from_description( src_desc.c_str(), TRUE, &error );
+    if ( !src_bin ) {
+      ADD_FAILURE() << "Failed to build source bin: " << ( error ? error->message : "?" );
+      if ( error )
+        g_error_free( error );
+      gst_object_unref( pipeline );
+      return -1;
+    }
+    GstElement *limiter = PipelineBuilder::createFramerateLimiterElement( /*node_id=*/0, key );
+    GstElement *sink = gst_element_factory_make( "fakesink", "sink" );
+    g_object_set( sink, "signal-handoffs", TRUE, "sync", FALSE, "async", FALSE, nullptr );
+
+    std::atomic<int> count{ 0 };
+    g_signal_connect(
+        sink, "handoff", G_CALLBACK( +[]( GstElement *, GstBuffer *, GstPad *, gpointer ud ) {
+          static_cast<std::atomic<int> *>( ud )->fetch_add( 1, std::memory_order_relaxed );
+        } ),
+        &count );
+
+    gst_bin_add_many( GST_BIN( pipeline ), src_bin, limiter, sink, nullptr );
+    if ( !gst_element_link_many( src_bin, limiter, sink, nullptr ) ) {
+      ADD_FAILURE() << "Failed to link test pipeline";
+      gst_object_unref( pipeline );
+      return -1;
+    }
+
+    gst_element_set_state( pipeline, GST_STATE_PLAYING );
+    GstBus *bus = gst_element_get_bus( pipeline );
+    GstMessage *msg = gst_bus_timed_pop_filtered(
+        bus, 5 * GST_SECOND, static_cast<GstMessageType>( GST_MESSAGE_EOS | GST_MESSAGE_ERROR ) );
+    bool eos_or_err = ( msg != nullptr );
+    if ( msg && GST_MESSAGE_TYPE( msg ) == GST_MESSAGE_ERROR ) {
+      gchar *dbg = nullptr;
+      GError *err = nullptr;
+      gst_message_parse_error( msg, &err, &dbg );
+      ADD_FAILURE() << "Pipeline error: " << ( err ? err->message : "?" );
+      if ( err )
+        g_error_free( err );
+      g_free( dbg );
+    }
+    if ( msg )
+      gst_message_unref( msg );
+    gst_object_unref( bus );
+    gst_element_set_state( pipeline, GST_STATE_NULL );
+    gst_object_unref( pipeline );
+
+    EXPECT_TRUE( eos_or_err ) << "Pipeline did not finish within timeout";
+    return count.load( std::memory_order_relaxed );
+  }
+};
+
+// 30 fps for 2 s (60 buffers) clamped to 5 fps -> 10 output buffers.
+TEST_F( FramerateLimiterRuntimeTest, FixedInputAboveMax_DropsToMax )
+{
+  int n = countLimitedBuffers(
+      "videotestsrc num-buffers=60 is-live=false ! "
+      "capsfilter caps=video/x-raw,framerate=(fraction)30/1,width=64,height=48,format=I420",
+      FramerateKey{ Framerate( 5, 1 ) } );
+  EXPECT_NEAR( n, 10, 1 ) << "Expected ~10 buffers (30->5 fps drop ratio), got " << n;
+}
+
+// 2 fps for 2 s (4 buffers) with max 5 fps: drop-only must not duplicate, so
+// every input buffer reaches the sink unchanged.
+TEST_F( FramerateLimiterRuntimeTest, FixedInputBelowMax_PassesThrough )
+{
+  int n = countLimitedBuffers(
+      "videotestsrc num-buffers=4 is-live=false ! "
+      "capsfilter caps=video/x-raw,framerate=(fraction)2/1,width=64,height=48,format=I420",
+      FramerateKey{ Framerate( 5, 1 ) } );
+  EXPECT_EQ( n, 4 ) << "Drop-only should not duplicate; got " << n;
+}
+
+// Variable-rate input: caps advertise framerate=0/1 (the openseekthermalsrc
+// pre-Fix-A failure mode), but PTS spacing on the buffers is real (~111 ms for
+// 9 fps). videorate alone cannot clamp this — fixate picks 0/1 — so the PTS
+// rate gate must do the work.
+TEST_F( FramerateLimiterRuntimeTest, VariableRateInput_DropsToMax )
+{
+  int n = countLimitedBuffers(
+      "videotestsrc num-buffers=18 is-live=false ! "
+      "capsfilter caps=video/x-raw,framerate=(fraction)9/1,width=64,height=48,format=I420 ! "
+      "capssetter replace=true "
+      "caps=\"video/x-raw,framerate=(fraction)0/1,width=64,height=48,format=I420\"",
+      FramerateKey{ Framerate( 5, 1 ) } );
+  EXPECT_NEAR( n, 10, 1 ) << "Variable-rate input must be clamped by PTS gate; got " << n;
 }
 
 int main( int argc, char **argv )

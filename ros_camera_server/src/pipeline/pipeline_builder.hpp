@@ -29,6 +29,8 @@
 #include <string>
 #include <unordered_map>
 
+class FramerateLimiterRuntimeTest;
+
 namespace ros_camera_server
 {
 
@@ -111,7 +113,7 @@ private:
 
   // Create specific element types
   GstElement *createDecoderElement( NodeId node_id, const DecoderKey &key );
-  GstElement *createFramerateLimiterElement( NodeId node_id, const FramerateKey &key );
+  static GstElement *createFramerateLimiterElement( NodeId node_id, const FramerateKey &key );
   GstElement *createScaleElement( NodeId node_id, const ScaleKey &key, MemoryFeature target_memory );
   GstElement *createEncoderElement( NodeId node_id, const EncoderKey &key );
 
@@ -156,6 +158,8 @@ private:
 
   // Generate a textual description of the realized pipeline starting from the source
   std::string dumpPipeline( const PipelineGraph &graph );
+
+  friend class ::FramerateLimiterRuntimeTest;
 };
 
 } // namespace ros_camera_server

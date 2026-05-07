@@ -34,6 +34,71 @@
 namespace ros_camera_server
 {
 
+namespace
+{
+
+// PTS-based rate gate state for the framerate limiter. Probe drops buffers
+// whose PTS lies less than `min_interval` after the last emitted buffer. This
+// catches the case videorate cannot handle: input caps `framerate=0/1`
+// (variable) where videorate's caps fixation refuses to clamp.
+//
+// `active` is driven by the negotiated downstream caps: only `framerate=0/1`
+// (variable) keeps it engaged. For any fixed framerate, videorate has already
+// clamped, so the per-buffer PTS check is dead weight.
+struct FramerateGate {
+  GstClockTime min_interval = 0;
+  GstClockTime last_pts = GST_CLOCK_TIME_NONE;
+  bool active = true;
+};
+
+GstPadProbeReturn framerateGateProbe( GstPad *, GstPadProbeInfo *info, gpointer user_data )
+{
+  auto *gate = static_cast<FramerateGate *>( user_data );
+
+  if ( GST_PAD_PROBE_INFO_TYPE( info ) & GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM ) {
+    GstEvent *event = GST_PAD_PROBE_INFO_EVENT( info );
+    GstEventType type = GST_EVENT_TYPE( event );
+    if ( type == GST_EVENT_CAPS ) {
+      GstCaps *caps = nullptr;
+      gst_event_parse_caps( event, &caps );
+      if ( caps != nullptr && gst_caps_get_size( caps ) > 0 ) {
+        gint num = 0, den = 1;
+        if ( gst_structure_get_fraction( gst_caps_get_structure( caps, 0 ), "framerate", &num,
+                                         &den ) ) {
+          gate->active = ( num == 0 );
+        }
+      }
+    } else if ( type == GST_EVENT_FLUSH_STOP || type == GST_EVENT_SEGMENT ) {
+      gate->last_pts = GST_CLOCK_TIME_NONE;
+    }
+    return GST_PAD_PROBE_OK;
+  }
+
+  if ( !gate->active )
+    return GST_PAD_PROBE_OK;
+
+  GstBuffer *buf = GST_PAD_PROBE_INFO_BUFFER( info );
+  if ( buf == nullptr )
+    return GST_PAD_PROBE_OK;
+  GstClockTime pts = GST_BUFFER_PTS( buf );
+  if ( !GST_CLOCK_TIME_IS_VALID( pts ) )
+    return GST_PAD_PROBE_OK;
+
+  if ( GST_CLOCK_TIME_IS_VALID( gate->last_pts ) ) {
+    if ( pts < gate->last_pts ) {
+      // Non-monotonic PTS without a flush — reset and pass through.
+      gate->last_pts = pts;
+      return GST_PAD_PROBE_OK;
+    }
+    if ( pts - gate->last_pts < gate->min_interval )
+      return GST_PAD_PROBE_DROP;
+  }
+  gate->last_pts = pts;
+  return GST_PAD_PROBE_OK;
+}
+
+} // namespace
+
 PipelineBuilder::PipelineBuilder( GstBin *pipeline, rclcpp::Node::SharedPtr node )
     : pipeline_( pipeline ), node_( std::move( node ) )
 {
@@ -386,7 +451,12 @@ GstElement *PipelineBuilder::createFramerateLimiterElement( NodeId node_id, cons
   // Configure videorate to drop frames only (not duplicate)
   g_object_set( videorate.get(), "drop-only", TRUE, nullptr );
 
-  // Set caps with framerate range (0 to max) for all supported videorate types
+  // Fraction-range caps [0/1, max] so videorate drop-only can pass through
+  // sources slower than max without trying to upsample. videorate's `max-rate`
+  // property would express the same range but is `gint` fps — it cannot
+  // represent fractional max framerates like 1/2. Variable-rate inputs
+  // (framerate=0/1) where videorate's fixate picks 0/1 are caught by the PTS
+  // probe attached below.
   constexpr std::array<const char *, 4> media_types = { "video/x-raw", "video/x-bayer",
                                                         "image/jpeg", "image/png" };
   GstCaps *caps = gst_caps_new_empty();
@@ -418,6 +488,19 @@ GstElement *PipelineBuilder::createFramerateLimiterElement( NodeId node_id, cons
   GstPad *src_pad = gst_element_get_static_pad( raw_capsfilter, "src" );
   gst_element_add_pad( raw_bin, gst_ghost_pad_new( "sink", sink_pad ) );
   gst_element_add_pad( raw_bin, gst_ghost_pad_new( "src", src_pad ) );
+
+  // PTS rate gate as fallback for the variable-rate (framerate=0/1) case that
+  // videorate cannot clamp. Owns its state via the probe destroy_notify, freed
+  // when the pad is finalized.
+  auto *gate = new FramerateGate{};
+  gate->min_interval =
+      gst_util_uint64_scale( GST_SECOND, static_cast<guint64>( key.max_framerate.denominator ),
+                             static_cast<guint64>( key.max_framerate.numerator ) );
+  gst_pad_add_probe(
+      src_pad,
+      static_cast<GstPadProbeType>( GST_PAD_PROBE_TYPE_BUFFER | GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM ),
+      framerateGateProbe, gate, []( gpointer p ) { delete static_cast<FramerateGate *>( p ); } );
+
   gst_object_unref( sink_pad );
   gst_object_unref( src_pad );
 
