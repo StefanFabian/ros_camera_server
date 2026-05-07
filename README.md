@@ -98,7 +98,7 @@ See [ros_camera_server/config/config.yaml](ros_camera_server/config/config.yaml)
 
 ### 📷 Inputs
 
-Supported input types: **V4L2**, **ROS 2 image topics**, **RTP**, **SeekThermal**. See [INPUTS.md](INPUTS.md) for the full reference.
+Supported input types: **V4L2**, **ROS 2 image topics** (via [gstreamer_ros_babel_fish](https://github.com/StefanFabian/gstreamer_ros_babel_fish)), **RTP**, **SeekThermal**. See [INPUTS.md](INPUTS.md) for the full reference.
 
 ### 📡 Outputs
 
