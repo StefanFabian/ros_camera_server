@@ -92,7 +92,7 @@ The field is ignored when no decoder is needed (e.g. raw inputs, or codec-passth
 
 ## SeekThermal
 
-Captures from a SeekThermal camera via the `openseekthermalsrc` GStreamer element.
+Captures from a SeekThermal camera via the `openseekthermalsrc` GStreamer element from [StefanFabian/openseekthermal](https://github.com/StefanFabian/openseekthermal).
 
 ```yaml
 input:
@@ -101,4 +101,14 @@ input:
   device: "1-3.2"
   # Optional: serial number to select a specific camera (not all models have one, though)
   serial: ""
+  # Optional: skip frames produced during shutter calibration (default: true)
+  skip_invalid_frames: true
+  # Optional: scale pixel values to the full datatype range (default: false)
+  normalize: false
+  # Optional: number of frames to use for normalization (default: 8)
+  normalize_frame_count: 8
+  # Optional: calibration files
+  # Accepts absolute paths, file:///abs/path, or package://<pkg>/<relative_path>.
+  dead_pixel_mask: ""
+  vignette_correction: ""
 ```

@@ -30,6 +30,16 @@ public:
   std::string serial;
   //! The port is used if no serial provided. If neither is provided, first device is used.
   std::string port;
+  //! If enabled, invalid frames (e.g. during shutter calibration) are skipped.
+  bool skip_invalid_frames = true;
+  //! Scale pixel values to use the full range of the datatype based on image statistics.
+  bool normalize = false;
+  //! Number of frames used for normalization.
+  unsigned int normalize_frame_count = 8;
+  //! Optional path to an 8-bit P5 PGM mask of dead pixels.
+  std::string dead_pixel_mask;
+  //! Optional path to a radial polynomial vignette fit.
+  std::string vignette_correction;
   [[nodiscard]] StreamInput createInput( const rclcpp::Node::SharedPtr &,
                                          const std::string &camera_id ) const override;
   static std::shared_ptr<OpenSeekThermalInputConfiguration>

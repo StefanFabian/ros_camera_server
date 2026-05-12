@@ -18,6 +18,7 @@
   <build_export_depend>libgstreamer1.0-dev</build_export_depend>
   <build_export_depend>libsoup-3.0-dev</build_export_depend>
 
+  <depend>ament_index_cpp</depend>
   <depend>gstreamer_ros_babel_fish</depend>
   <depend>rclcpp</depend>
   <depend>ros_camera_server_msgs</depend>

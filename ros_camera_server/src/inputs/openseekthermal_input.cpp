@@ -16,10 +16,43 @@
  */
 
 #include "ros_camera_server/inputs/openseekthermal_input.hpp"
+#include "ros_camera_server/exceptions.hpp"
 #include "ros_camera_server/factories/pipeline_input_factory.hpp"
+
+#include <ament_index_cpp/get_package_prefix.hpp>
+#include <ament_index_cpp/get_package_share_directory.hpp>
 
 namespace ros_camera_server
 {
+
+namespace
+{
+// Resolves package://<pkg>/<rel> to an absolute filesystem path. file:// is stripped.
+// Other inputs are returned unchanged.
+std::string resolvePackageUri( const std::string &uri )
+{
+  constexpr std::string_view kPackagePrefix = "package://";
+  constexpr std::string_view kFilePrefix = "file://";
+  if ( uri.rfind( kPackagePrefix, 0 ) != 0 ) {
+    if ( uri.rfind( kFilePrefix, 0 ) == 0 )
+      return uri.substr( kFilePrefix.size() );
+    return uri;
+  }
+  const std::string remainder = uri.substr( kPackagePrefix.size() );
+  const auto slash = remainder.find( '/' );
+  if ( slash == std::string::npos || slash == 0 ) {
+    throw PipelineBuildError( "Malformed package:// URI '" + uri +
+                              "', expected package://<package>/<relative_path>" );
+  }
+  const std::string package = remainder.substr( 0, slash );
+  const std::string relative = remainder.substr( slash + 1 );
+  try {
+    return ament_index_cpp::get_package_share_directory( package ) + "/" + relative;
+  } catch ( const ament_index_cpp::PackageNotFoundError &e ) {
+    throw PipelineBuildError( "Could not resolve package:// URI '" + uri + "': " + e.what() );
+  }
+}
+} // namespace
 
 std::shared_ptr<OpenSeekThermalInputConfiguration>
 OpenSeekThermalInputConfiguration::from_yaml_shared( const YAML::Node &config )
@@ -29,6 +62,11 @@ OpenSeekThermalInputConfiguration::from_yaml_shared( const YAML::Node &config )
   result->loadSharedFromYaml( config );
   result->port = config["device"].as<std::string>( "" );
   result->serial = config["serial"].as<std::string>( "" );
+  result->skip_invalid_frames = config["skip_invalid_frames"].as<bool>( true );
+  result->normalize = config["normalize"].as<bool>( false );
+  result->normalize_frame_count = config["normalize_frame_count"].as<unsigned int>( 8 );
+  result->dead_pixel_mask = config["dead_pixel_mask"].as<std::string>( "" );
+  result->vignette_correction = config["vignette_correction"].as<std::string>( "" );
   return result;
 }
 
@@ -37,8 +75,14 @@ StreamInput OpenSeekThermalInputConfiguration::createInput( const rclcpp::Node::
 {
   auto *input_bin = GST_BIN( gst_bin_new( "input_bin" ) );
   GstElement *src = gst_element_factory_make( "openseekthermalsrc", "input" );
-  g_object_set( G_OBJECT( src ), "serial", serial.c_str(), "port", port.c_str(), "do-timestamp",
-                TRUE, nullptr );
+  const std::string dead_pixel_mask_path = resolvePackageUri( dead_pixel_mask );
+  const std::string vignette_correction_path = resolvePackageUri( vignette_correction );
+  g_object_set( G_OBJECT( src ), "serial", serial.c_str(), "port", port.c_str(),
+                "skip-invalid-frames", skip_invalid_frames ? TRUE : FALSE, "normalize",
+                normalize ? TRUE : FALSE, "normalize-frame-count",
+                static_cast<guint>( normalize_frame_count ), "dead-pixel-mask",
+                dead_pixel_mask_path.c_str(), "vignette-correction",
+                vignette_correction_path.c_str(), "do-timestamp", TRUE, nullptr );
 
   gst_bin_add( input_bin, src );
   GstPad *input_pad = gst_element_get_static_pad( src, "src" );

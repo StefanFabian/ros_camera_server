@@ -5,6 +5,7 @@ set(CMAKE_CXX_STANDARD 17)
 add_definitions(-Wall -Wpedantic -Wno-deprecated-declarations)
 
 find_package(ament_cmake REQUIRED)
+find_package(ament_index_cpp REQUIRED)
 find_package(ros_camera_server_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
@@ -66,7 +67,7 @@ target_link_libraries(
   ${PROJECT_NAME} PRIVATE
   yaml-cpp::yaml-cpp
 )
-ament_target_dependencies(${PROJECT_NAME} PUBLIC ros_camera_server_msgs)
+ament_target_dependencies(${PROJECT_NAME} PUBLIC ament_index_cpp ros_camera_server_msgs)
 target_include_directories(${PROJECT_NAME}
   PUBLIC ${GST_INCLUDE_DIRS} ${SOUP_INCLUDE_DIRS})
 
@@ -104,7 +105,7 @@ install(DIRECTORY config launch DESTINATION share/${PROJECT_NAME})
 
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
 ament_export_include_directories(include)
-ament_export_dependencies(rclcpp ros_camera_server_msgs yaml-cpp)
+ament_export_dependencies(ament_index_cpp rclcpp ros_camera_server_msgs yaml-cpp)
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
