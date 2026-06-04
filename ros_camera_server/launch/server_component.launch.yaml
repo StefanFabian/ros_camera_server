@@ -1,0 +1,37 @@
+launch:
+  - arg:
+      name: "name"
+      default: "$(anon camera_server)"
+  - arg:
+      name: "container_name"
+  - arg:
+      name: "config_path"
+      default: "$(find-pkg-share ros_camera_server)/config/config.yaml"
+  # Increase timeouts to give more time for cleaning up resources.
+  - arg:
+      name: "sigterm_timeout"
+      default: "20"
+  - arg:
+      name: "sigkill_timeout"
+      default: "30"
+  - arg:
+      name: "log_level"
+      default: "info"
+  - node_container:
+      pkg: "rclcpp_components"
+      exec: "component_container"
+      name: "$(var container_name)"
+      namespace: ""
+      args: "--ros-args --log-level ros_camera_server:=$(var log_level)"
+      composable_node:
+        - pkg: "ros_camera_server"
+          plugin: "ros_camera_server::CameraServerNode"
+          name: "$(var name)"
+          param:
+            - name: config_path
+              value: "$(var config_path)"
+          # Enable intra-process comms so raw images are passed by pointer to
+          # other nodes in the container instead of being copied/serialized.
+          extra_arg:
+            - name: "use_intra_process_comms"
+              value: "true"

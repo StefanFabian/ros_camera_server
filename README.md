@@ -18,6 +18,9 @@ This enables you to simultaneously stream your cameras to ROS and encoded to you
 
 ## 🛠️ Building from Source
 
+The camera server requires at least ROS 2 Jazzy.
+Backporting is possible but not currently planned.
+
 1. **Create a ROS 2 workspace** (if you haven't already):
    ```bash
    mkdir -p ~/ros2_ws/src
@@ -60,6 +63,35 @@ By default it loads the example config `config/config.yaml`. Pass a custom confi
 ```bash
 ros2 launch ros_camera_server server.launch.yaml config_path:=/path/to/your/config.yaml
 ```
+
+### 🧩 Running as a Composable Component
+
+The server is also available as an `rclcpp_components` node (`ros_camera_server::CameraServerNode`), so it can share a process with other nodes.
+This is recommended for exchange with processing nodes, so they can use intra process comms instead of having to copy, serialize and deserialize large raw images.
+Launch it into its own container:
+
+```bash
+ros2 launch ros_camera_server server_component.launch.yaml container_name:=camera_container
+```
+
+Or load it into an already-running container:
+
+```bash
+ros2 component load /container_name ros_camera_server ros_camera_server::CameraServerNode \
+  -p config_path:=/path/to/your/config.yaml
+```
+
+> [!NOTE]
+> Run only **one camera server per container**. The server relies on process-global GStreamer state (debug/log handlers), so a second camera server (or other GStreamer-based nodes) in the same container can interfere with its error detection and self-healing.
+> Sharing the container with non-GStreamer processing nodes for zero-copy intra-process comms is fine.
+>
+> When launched via `server_component.launch.yaml` the node is given an auto-generated unique name. Loaded manually with `ros2 component load` it defaults to `camera_server`; override with `--node-name`.
+
+<!-- -->
+
+> [!TIP]
+> You have to explicitly enable `use_intra_process_comms` for all nodes loaded into the container.
+> And it will only be zero-copy if you publish `UniquePtr` messages and subscribe `ConstSharedPtr`.
 
 ## ⚙️ Configuration
 

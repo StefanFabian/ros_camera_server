@@ -15,9 +15,6 @@ launch:
   - arg:
       name: "log_level"
       default: "info"
-  - arg:
-      name: "startup_delay"
-      default: "0"
   - node:
       pkg: "ros_camera_server"
       exec: "camera_server_standalone"
@@ -26,5 +23,3 @@ launch:
       param:
         - name: config_path
           value: "$(var config_path)"
-        - name: startup_delay
-          value: "$(var startup_delay)"

@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.5.1)
+cmake_minimum_required(VERSION 3.15)
 project(ros_camera_server)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -8,6 +8,7 @@ find_package(ament_cmake REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(ros_camera_server_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rclcpp_components REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(yaml-cpp REQUIRED)
 
@@ -48,7 +49,6 @@ set(SOURCES
   src/pipeline_monitor.cpp
   src/camera_server.cpp
   src/camera_server_node.cpp
-  src/camera_server_standalone.cpp
   src/configuration.cpp
 )
 
@@ -67,12 +67,16 @@ target_link_libraries(
   ${PROJECT_NAME} PRIVATE
   yaml-cpp::yaml-cpp
 )
-ament_target_dependencies(${PROJECT_NAME} PUBLIC ament_index_cpp ros_camera_server_msgs)
+ament_target_dependencies(${PROJECT_NAME} PUBLIC ament_index_cpp ros_camera_server_msgs rclcpp_components)
 target_include_directories(${PROJECT_NAME}
   PUBLIC ${GST_INCLUDE_DIRS} ${SOUP_INCLUDE_DIRS})
 
-add_executable(camera_server_standalone src/camera_server_standalone.cpp)
-target_link_libraries(camera_server_standalone ${PROJECT_NAME})
+# Register CameraServerNode so it can be loaded into an rclcpp_components container, and
+# generate the single-process executable (camera_server_standalone): a thin single-component
+# container that loads and spins this node. Used by server.launch.yaml.
+rclcpp_components_register_node(${PROJECT_NAME}
+  PLUGIN "ros_camera_server::CameraServerNode"
+  EXECUTABLE camera_server_standalone)
 
 add_executable(enumerate_encoders src/tools/enumerate_encoders.cpp)
 target_link_libraries(enumerate_encoders
@@ -105,7 +109,7 @@ install(DIRECTORY config launch DESTINATION share/${PROJECT_NAME})
 
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
 ament_export_include_directories(include)
-ament_export_dependencies(ament_index_cpp rclcpp ros_camera_server_msgs yaml-cpp)
+ament_export_dependencies(ament_index_cpp rclcpp rclcpp_components ros_camera_server_msgs yaml-cpp)
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)

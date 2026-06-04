@@ -97,6 +97,9 @@ private:
   clock::time_point start_time_;
   mutable std::mutex input_timestamps_mutex_;
   mutable RingBuffer<clock::time_point, 30> input_buffer_timestamps_;
+  // Guards current_segment_: written/read on the streaming thread (SEGMENT event, buffer probe)
+  // and cleared on the executor thread (restart()).
+  mutable std::mutex segment_mutex_;
   std::optional<GstSegment> current_segment_ = std::nullopt;
   guint input_probe_ = 0;
 

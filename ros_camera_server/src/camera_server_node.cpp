@@ -17,6 +17,8 @@
 
 #include "ros_camera_server/camera_server_node.hpp"
 #include "camera_pipeline.hpp"
+#include "ros_camera_server/factories/pipeline_input_factory.hpp"
+#include "ros_camera_server/factories/pipeline_output_factory.hpp"
 #include <fstream>
 #include <rclcpp/node.hpp>
 
@@ -34,14 +36,16 @@ std::string parseYAML( const std::string &path )
   return yaml;
 }
 
-CameraServerNode::CameraServerNode( const std::string &name )
-    : rclcpp::Node( name, rclcpp::NodeOptions().enable_logger_service( true ) )
+CameraServerNode::CameraServerNode( const rclcpp::NodeOptions &options )
+    : rclcpp::Node( "camera_server", rclcpp::NodeOptions( options ).enable_logger_service( true ) )
 {
+  // Register the built-in input/output types. When loaded as a composable component our
+  // main() never runs, so this must happen here. Both calls are idempotent.
+  PipelineInputFactory::registerDefaultInputs();
+  PipelineOutputFactory::registerDefaultOutputs();
+
   rcl_interfaces::msg::ParameterDescriptor param_desc;
   param_desc.read_only = true;
-  declare_parameter<int>( "startup_delay", 0, param_desc );
-  if ( int delay = get_parameter( "startup_delay" ).as_int(); delay > 0 )
-    sleep( delay );
   declare_parameter<std::string>( "config_path", param_desc );
   declare_parameter<double>( "max_processing_time", 2.0 );
   std::string config_path = get_parameter( "config_path" ).as_string();
@@ -90,3 +94,6 @@ void CameraServerNode::publishAnnouncement()
 }
 
 } // namespace ros_camera_server
+
+#include <rclcpp_components/register_node_macro.hpp>
+RCLCPP_COMPONENTS_REGISTER_NODE( ros_camera_server::CameraServerNode )

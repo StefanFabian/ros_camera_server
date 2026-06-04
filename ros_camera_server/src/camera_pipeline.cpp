@@ -163,7 +163,10 @@ void CameraPipeline::restart()
                             << "' state change to NULL did not complete within 2 seconds." );
   }
 
-  current_segment_ = std::nullopt;
+  {
+    std::lock_guard lock( segment_mutex_ );
+    current_segment_ = std::nullopt;
+  }
   start();
 }
 
@@ -216,6 +219,7 @@ GstPadProbeReturn CameraPipeline::inputBufferCallback( GstPad *pad, GstPadProbeI
   if ( GST_PAD_PROBE_INFO_TYPE( info ) & GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM ) {
     GstEvent *event = GST_PAD_PROBE_INFO_EVENT( info );
     if ( GST_EVENT_TYPE( event ) == GST_EVENT_SEGMENT ) {
+      std::lock_guard lock( self->segment_mutex_ );
       if ( !self->current_segment_ ) {
         self->current_segment_ = GstSegment();
       }
@@ -223,15 +227,18 @@ GstPadProbeReturn CameraPipeline::inputBufferCallback( GstPad *pad, GstPadProbeI
     }
     return GST_PAD_PROBE_OK;
   }
-  if ( !self->current_segment_ ) {
-    // No segment yet, cannot process timestamps
-    return GST_PAD_PROBE_OK;
+  // Snapshot the segment under the lock so the check and copy are atomic w.r.t. restart()
+  // clearing current_segment_ to nullopt on the executor thread (avoids a torn read /
+  // std::bad_optional_access escaping this C pad-probe callback).
+  GstSegment segment;
+  {
+    std::lock_guard lock( self->segment_mutex_ );
+    if ( !self->current_segment_ )
+      return GST_PAD_PROBE_OK; // No segment yet, cannot process timestamps
+    segment = self->current_segment_.value();
   }
   const guint64 ingress_time_ns = self->node_->now().nanoseconds();
   const clock::time_point now = clock::now();
-
-  // current_segment_ can be reset to nullopt by restart() on the executor thread; copy it by value
-  const GstSegment segment = self->current_segment_.value();
 
   // Pipeline clock + base_time are PLAYING-session lifetime state, sampled outside the hot path:
   // the clock ref in useClock() and base_time on the PLAYING bus message. Read them once here;

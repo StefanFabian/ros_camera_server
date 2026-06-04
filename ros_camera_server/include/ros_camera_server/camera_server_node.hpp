@@ -29,7 +29,7 @@ class CameraServerNode : public rclcpp::Node
 public:
   using Announcement = ros_camera_server_msgs::msg::Announcement;
 
-  explicit CameraServerNode( const std::string &name );
+  explicit CameraServerNode( const rclcpp::NodeOptions &options = rclcpp::NodeOptions() );
   ~CameraServerNode() override = default;
 
 private:

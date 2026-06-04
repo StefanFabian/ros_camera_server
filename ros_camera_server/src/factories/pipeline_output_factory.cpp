@@ -21,21 +21,20 @@
 #include "ros_camera_server/outputs/rtp_output.hpp"
 #include "ros_camera_server/outputs/srt_output.hpp"
 #include "ros_camera_server/outputs/webrtc_output.hpp"
+#include <mutex>
 
 namespace ros_camera_server
 {
 
 void PipelineOutputFactory::registerDefaultOutputs()
 {
-  static bool registered = false;
-  if ( registered )
-    return;
-  registered = true;
-
-  registerOutput( "ros2", Ros2OutputConfiguration::from_yaml_shared );
-  registerOutput( "rtp", RtpOutputConfiguration::from_yaml_shared );
-  registerOutput( "srt", SrtOutputConfiguration::from_yaml_shared );
-  registerOutput( "webrtc", WebrtcOutputConfiguration::from_yaml_shared );
+  static std::once_flag flag;
+  std::call_once( flag, []() {
+    registerOutput( "ros2", Ros2OutputConfiguration::from_yaml_shared );
+    registerOutput( "rtp", RtpOutputConfiguration::from_yaml_shared );
+    registerOutput( "srt", SrtOutputConfiguration::from_yaml_shared );
+    registerOutput( "webrtc", WebrtcOutputConfiguration::from_yaml_shared );
+  } );
 }
 
 void PipelineOutputFactory::registerOutput( const std::string &name,

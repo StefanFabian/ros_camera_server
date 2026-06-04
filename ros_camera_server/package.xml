@@ -21,6 +21,7 @@
   <depend>ament_index_cpp</depend>
   <depend>gstreamer_ros_babel_fish</depend>
   <depend>rclcpp</depend>
+  <depend>rclcpp_components</depend>
   <depend>ros_camera_server_msgs</depend>
   <depend>sensor_msgs</depend>
 

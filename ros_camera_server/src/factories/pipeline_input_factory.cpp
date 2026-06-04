@@ -21,21 +21,20 @@
 #include "ros_camera_server/inputs/ros2_input.hpp"
 #include "ros_camera_server/inputs/rtp_input.hpp"
 #include "ros_camera_server/inputs/v4l2_input.hpp"
+#include <mutex>
 
 namespace ros_camera_server
 {
 
 void PipelineInputFactory::registerDefaultInputs()
 {
-  static bool registered = false;
-  if ( registered )
-    return;
-  registered = true;
-
-  registerInput( "openseekthermal", OpenSeekThermalInputConfiguration::from_yaml_shared );
-  registerInput( "ros2", Ros2InputConfiguration::from_yaml_shared );
-  registerInput( "rtp", RtpInputConfiguration::from_yaml_shared );
-  registerInput( "v4l2", V4l2InputConfiguration::from_yaml_shared );
+  static std::once_flag flag;
+  std::call_once( flag, []() {
+    registerInput( "openseekthermal", OpenSeekThermalInputConfiguration::from_yaml_shared );
+    registerInput( "ros2", Ros2InputConfiguration::from_yaml_shared );
+    registerInput( "rtp", RtpInputConfiguration::from_yaml_shared );
+    registerInput( "v4l2", V4l2InputConfiguration::from_yaml_shared );
+  } );
 }
 
 void PipelineInputFactory::registerInput( const std::string &name,
