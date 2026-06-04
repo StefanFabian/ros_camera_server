@@ -23,6 +23,7 @@
 #include "ros_camera_server/helpers/ring_buffer.hpp"
 #include "ros_camera_server/helpers/smart_gst_pointer.hpp"
 #include "ros_camera_server/statistics.hpp"
+#include <atomic>
 #include <mutex>
 #include <optional>
 #include <rclcpp/node.hpp>
@@ -98,6 +99,14 @@ private:
   mutable RingBuffer<clock::time_point, 30> input_buffer_timestamps_;
   std::optional<GstSegment> current_segment_ = std::nullopt;
   guint input_probe_ = 0;
+
+  // The clock we forced onto the pipeline via useClock(), held with our own ref. Read on the
+  // streaming thread to derive capture timestamps without taking the per-buffer GST_OBJECT_LOCK.
+  SmartGstPointer<GstClock> pipeline_clock_;
+  // Pipeline base_time, snapshotted on each PLAYING transition (bus/main-loop thread) and read on
+  // the streaming thread. GST_CLOCK_TIME_NONE while not playing -> capture timestamps fall back to
+  // server ingress time.
+  std::atomic<GstClockTime> pipeline_base_time_ = GST_CLOCK_TIME_NONE;
 };
 } // namespace ros_camera_server
 

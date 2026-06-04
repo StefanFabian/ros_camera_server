@@ -144,6 +144,9 @@ void CameraPipeline::stop()
 {
   gst_element_set_state( GST_ELEMENT( pipeline_.get() ), GST_STATE_NULL );
   start_time_ = clock::time_point();
+  // Invalidate immediately so an early buffer of the next session can't use the previous
+  // session's base_time before the (async) PLAYING bus message refreshes it.
+  pipeline_base_time_.store( GST_CLOCK_TIME_NONE );
 }
 
 void CameraPipeline::restart()
@@ -178,7 +181,12 @@ gboolean CameraPipeline::onBusMessage( GstBus *, GstMessage *msg, gpointer user_
       return TRUE;
     GstState old_state, new_state, pending_state;
     gst_message_parse_state_changed( msg, &old_state, &new_state, &pending_state );
-    if ( new_state == GST_STATE_READY ) { }
+    // base_time is fixed for the lifetime of a PLAYING session and changes on each PLAYING transition
+    if ( new_state == GST_STATE_PLAYING )
+      self->pipeline_base_time_.store(
+          gst_element_get_base_time( GST_ELEMENT( self->pipeline_.get() ) ) );
+    else
+      self->pipeline_base_time_.store( GST_CLOCK_TIME_NONE );
     break;
   case GST_MESSAGE_ERROR:
     gst_message_parse_error( msg, &err, &debug_info );
@@ -219,46 +227,94 @@ GstPadProbeReturn CameraPipeline::inputBufferCallback( GstPad *pad, GstPadProbeI
     // No segment yet, cannot process timestamps
     return GST_PAD_PROBE_OK;
   }
-  rclcpp::Time capture_time = self->node_->now();
-  guint64 capture_time_ns = capture_time.nanoseconds();
-  clock::time_point now = clock::now();
+  const guint64 ingress_time_ns = self->node_->now().nanoseconds();
+  const clock::time_point now = clock::now();
 
+  // current_segment_ can be reset to nullopt by restart() on the executor thread; copy it by value
+  const GstSegment segment = self->current_segment_.value();
+
+  // Pipeline clock + base_time are PLAYING-session lifetime state, sampled outside the hot path:
+  // the clock ref in useClock() and base_time on the PLAYING bus message. Read them once here;
+  // gst_clock_get_time on the monotonic system clock is a lock-free clock_gettime, so no
+  // per-buffer GST_OBJECT_LOCK is needed. Both are GST_CLOCK_TIME_NONE until the pipeline plays.
+  const GstClockTime base_time = self->pipeline_base_time_.load();
+  const GstClockTime pipeline_now = self->pipeline_clock_.get()
+                                        ? gst_clock_get_time( self->pipeline_clock_.get() )
+                                        : GST_CLOCK_TIME_NONE;
+
+  // Convert a buffer PTS into a UNIX-epoch capture timestamp. PTS is in the segment's
+  // coordinate system; running_time = gst_segment_to_running_time(segment, pts) and the
+  // capture instant on the pipeline clock is base_time + running_time. For sources that
+  // stamp at capture (e.g. v4l2src with kernel timestamps) this is closer to the true
+  // capture time than sampling wall-clock now. Falls back to ingress_time_ns when the
+  // value is implausible (not playing yet, PTS unset or outside the segment, arithmetic
+  // overflow, future timestamp, or > 10s in the past).
+  auto deriveCaptureTime = [&]( GstClockTime pts ) -> guint64 {
+    constexpr guint64 kMaxAgeNs = 10'000'000'000ULL; // 10 second sanity threshold
+    if ( pts == GST_CLOCK_TIME_NONE )
+      return ingress_time_ns;
+    if ( pipeline_now == GST_CLOCK_TIME_NONE || base_time == GST_CLOCK_TIME_NONE )
+      return ingress_time_ns; // Pipeline not playing yet
+    GstClockTime running_time = gst_segment_to_running_time( &segment, GST_FORMAT_TIME, pts );
+    if ( running_time == GST_CLOCK_TIME_NONE ) {
+      // PTS never maps into the segment -> the feature silently degrades to ingress time for every
+      // frame; warn (throttled) so the misconfiguration is visible instead of failing quietly.
+      SERVER_LOG_WARN_THROTTLE(
+          *self->node_->get_clock(), 20000,
+          "Camera '%s': input PTS is outside the current segment; capture timestamps fall back to "
+          "server ingress time. This message is throttled to once every 20s.",
+          self->configuration_.id.c_str() );
+      return ingress_time_ns;
+    }
+    GstClockTime pipeline_capture = base_time + running_time;
+    // Reject unsigned overflow and capture instants in the future.
+    if ( pipeline_capture < base_time || pipeline_capture > pipeline_now )
+      return ingress_time_ns;
+    GstClockTime age_ns = pipeline_now - pipeline_capture;
+    if ( age_ns > kMaxAgeNs ) {
+      SERVER_LOG_WARN_THROTTLE(
+          *self->node_->get_clock(), 20000,
+          "Camera '%s': derived capture time is more than 10s in the past; capture timestamps fall "
+          "back to server ingress time. This message is throttled to once every 20s.",
+          self->configuration_.id.c_str() );
+      return ingress_time_ns;
+    }
+    return ingress_time_ns - age_ns;
+  };
+
+  // Stamp a single buffer: add server ingress meta to every buffer, and a PTS-derived
+  // capture timestamp to any buffer that doesn't already carry one (e.g. from an
+  // upstream ROS node). May replace *buf when making it writable.
+  auto stampBuffer = [&]( GstBuffer **buf ) {
+    bool needs_unix_meta = !buffer_get_unix_timestamp_meta( *buf );
+    *buf = gst_buffer_make_writable( *buf );
+    if ( needs_unix_meta )
+      buffer_add_unix_timestamp_meta( *buf, deriveCaptureTime( GST_BUFFER_PTS( *buf ) ) );
+    buffer_add_server_ingress_meta( *buf, ingress_time_ns );
+  };
+
+  bool processed = false;
   if ( GST_PAD_PROBE_INFO_TYPE( info ) & GST_PAD_PROBE_TYPE_BUFFER ) {
     GstBuffer *buffer = GST_PAD_PROBE_INFO_BUFFER( info );
-    // Only add capture timestamp if buffer doesn't already have one (e.g., from upstream ROS node)
-    bool needs_unix_meta = !buffer_get_unix_timestamp_meta( buffer );
-    // Always make writable to add server ingress meta
-    buffer = gst_buffer_make_writable( buffer );
-    if ( needs_unix_meta ) {
-      buffer_add_unix_timestamp_meta( buffer, capture_time_ns );
-    }
-    buffer_add_server_ingress_meta( buffer, capture_time_ns );
+    stampBuffer( &buffer );
     GST_PAD_PROBE_INFO_DATA( info ) = buffer;
-    {
-      std::lock_guard lock( self->input_timestamps_mutex_ );
-      self->input_buffer_timestamps_.push( now );
-    }
+    processed = true;
   } else if ( GST_PAD_PROBE_INFO_TYPE( info ) & GST_PAD_PROBE_TYPE_BUFFER_LIST ) {
     GstBufferList *buffer_list = GST_PAD_PROBE_INFO_BUFFER_LIST( info );
     buffer_list = gst_buffer_list_make_writable( buffer_list );
     gst_buffer_list_foreach(
         buffer_list,
         []( GstBuffer **buf, guint /*idx*/, gpointer user_data ) -> gboolean {
-          guint64 ingress_time_ns = *static_cast<guint64 *>( user_data );
-          bool needs_unix_meta = !buffer_get_unix_timestamp_meta( *buf );
-          *buf = gst_buffer_make_writable( *buf );
-          if ( needs_unix_meta ) {
-            buffer_add_unix_timestamp_meta( *buf, ingress_time_ns );
-          }
-          buffer_add_server_ingress_meta( *buf, ingress_time_ns );
+          ( *static_cast<decltype( stampBuffer ) *>( user_data ) )( buf );
           return TRUE;
         },
-        &capture_time_ns );
+        &stampBuffer );
     GST_PAD_PROBE_INFO_DATA( info ) = buffer_list;
-    {
-      std::lock_guard lock( self->input_timestamps_mutex_ );
-      self->input_buffer_timestamps_.push( now );
-    }
+    processed = true;
+  }
+  if ( processed ) {
+    std::lock_guard lock( self->input_timestamps_mutex_ );
+    self->input_buffer_timestamps_.push( now );
   }
   return GST_PAD_PROBE_OK;
 }
@@ -292,6 +348,8 @@ void CameraPipeline::useClock( GstClock *clock )
     throw std::runtime_error( "Pipeline not built yet" );
   }
   gst_pipeline_use_clock( GST_PIPELINE( pipeline_.get() ), clock );
+  // Keep our own ref so inputBufferCallback can read the clock without GST_ELEMENT_CLOCK + lock.
+  pipeline_clock_ = clock == nullptr ? nullptr : GST_CLOCK( gst_object_ref( clock ) );
 }
 
 void CameraPipeline::updateFlowControl() { flow_controller_.update(); }
