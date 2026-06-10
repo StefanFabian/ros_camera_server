@@ -78,6 +78,20 @@ input:
 
 `rtpjitterbuffer` smooths sequence-number reordering. If the sender embeds an `x-timestamp` RTP header extension (this server does on its RTP/SRT/WebRTC outputs), the original capture time is recovered and propagated through the pipeline as a `timestamp/x-unix` reference.
 
+## Video Test Source
+
+Generates a test pattern via the GStreamer `videotestsrc` element. Useful for running the server without camera hardware.
+
+```yaml
+input:
+  type: videotestsrc
+  pattern: smpte       # optional; any videotestsrc pattern nick, e.g. smpte, ball, snow (default smpte)
+  format: I420         # optional; raw pixel format, e.g. I420, RGB, GRAY8 (default: negotiated)
+  width: 1280          # optional; default 640
+  height: 720          # optional; default 480
+  framerate: "30/1"    # optional; element default 30/1
+```
+
 ## Decoder selection
 
 When an input produces an encoded format (H.264, H.265, JPEG, PNG) and a downstream consumer needs raw video — for example a ROS 2 `format: raw` output, a different output codec, or a scaling/framerate transform — the pipeline inserts a decoder. The optional `decoder:` field selects the preferred backend using the same syntax as the output `encoder:` field (see [OUTPUTS.md](OUTPUTS.md)). Pipe-delimited tokens express priority order; `auto` (the default) tries hardware backends first and falls back to software, hot-swapping at runtime if a backend stops producing frames.

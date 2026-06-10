@@ -6,7 +6,7 @@ cameras:
     name: "Example Camera v4l2"
     input:
       type: v4l2
-      device: "/dev/video4"
+      device: "/dev/video0"
       # For v4l2 width, height and framerate have to be specified.
       # You can use `ros2 run ros_camera_server v4l2_caps_investigator` to get the capabilities of your v4l2 device.
       width: 1920
@@ -20,9 +20,8 @@ cameras:
       #   brightness: 128
       #   exposure_time__absolute: 500
     outputs:
-      - type: webrtc
+      - type: srt
         codec: h265
-        framerate: "30/1" # Limits the framerate. Frames are only dropped, never duplicated.
         port: 7100
         bitrate: 800 # in kbps
         width: 1920 # For the outputs width and height are upper limits. Aspect ratio is preserved.
@@ -33,7 +32,7 @@ cameras:
       # the window is made large again.
       - type: srt
         codec: h265
-        framerate: "30/1"
+        framerate: "15/1" # Limits the framerate. Frames are only dropped, never duplicated.
         port: 7101
         bitrate: 300
         width: 600
@@ -42,11 +41,9 @@ cameras:
         codec: h264
         width: 1920
         height: 1080
-        framerate: 30/1
         bitrate: 2000 # in kbps
       - type: ros2
         topic: "/camera_server/example"
-        framerate: 1/3
         frame_id: "example_camera_optical_frame"
         codec: auto # Supported codecs: auto|raw|compressed. auto will select based on the available input format
         format: "rgb8" # Only used if codec is raw. This specifies the encoding of the ROS image messages. Supported formats: rgb8|bgr8|rgba8|bgra8|mono8|mono16|uyvy|yuyv|nv21|nv24
@@ -59,7 +56,7 @@ cameras:
     input:
       type: ros2
       topic: "/image_raw"
-      #framerate: "15/1" # You can specify the framerate, otherwise it will be determined by waiting for the first 5 images
+      #framerate: "15/1" # You can and should specify the framerate, otherwise it will be determined by waiting for the first 5 images which may not always work
       # Supported formats: raw|jpeg|png. jpeg/png are usually used for /compressed image topics.
       # Currently automatic format detection is not implemented nor planned for the pipelines, so you need to know and specify the correct format.
       format: raw
@@ -67,23 +64,19 @@ cameras:
       - type: srt
         codec: h264
         bitrate: 1000
-        framerate: "30/1" # If the input is limited to 15/1, this will not increase the framerate.
         latency: 100 # in ms, optional, default: 100ms. This is the latency that will be set on the SRT sink. Higher latency can help with unstable network connections.
         port: 7110
-  gripper_thermal:
-    name: "Gripper Thermal"
+  example_camera_test_source:
+    name: "Example Camera Test Source"
     input:
-      type: openseekthermal
-      serial: 0809A15BH5BA
-      dead_pixel_mask: "/home/stefan/workspaces/claude/src/openseekthermal/dead_pixels.pgm"
-      vignette_correction: "/home/stefan/workspaces/claude/src/openseekthermal/vignette.ini"
-      normalize: true
+      type: videotestsrc
+      pattern: smpte #e.g. smpte|ball|snow|pinwheel See https://gstreamer.freedesktop.org/documentation/videotestsrc/index.html?gi-language=c#GstVideoTestSrcPattern for supported patterns
+      width: 1920
+      height: 1080
+      framerate: "30/1"
+      #format: RGB # Optional, can be I420|RGB|GRAY8 or any other GstVideoFormat.
     outputs:
-      - type: srt
-        codec: h265
-          #framerate: 10/1
-        bitrate: 256
+      - type: webrtc
+        codec: h264
+        bitrate: 1000
         port: 7200
-        latency: 50
-      - type: ros2
-        topic: "gripper_thermal/image_raw"

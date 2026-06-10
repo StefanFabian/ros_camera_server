@@ -16,7 +16,7 @@ include(FindPkgConfig)
 pkg_check_modules(GST REQUIRED
   gstreamer-1.0 gstreamer-app-1.0 gstreamer-net-1.0
   gstreamer-plugins-base-1.0 gstreamer-pbutils-1.0 gstreamer-rtp-1.0
-  gstreamer-webrtc-1.0 gstreamer-sdp-1.0)
+  gstreamer-video-1.0 gstreamer-webrtc-1.0 gstreamer-sdp-1.0)
 pkg_check_modules(SOUP REQUIRED libsoup-3.0)
 
 
@@ -35,6 +35,7 @@ set(SOURCES
   src/inputs/ros2_input.cpp
   src/inputs/rtp_input.cpp
   src/inputs/v4l2_input.cpp
+  src/inputs/videotestsrc_input.cpp
   src/outputs/pipeline_output.cpp
   src/outputs/ros2_output.cpp
   src/outputs/rtp_output.cpp
