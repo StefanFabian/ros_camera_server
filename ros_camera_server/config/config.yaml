@@ -79,4 +79,3 @@ cameras:
       - type: webrtc
         codec: h264
         bitrate: 1000
-        port: 7200

@@ -261,6 +261,38 @@ type: videotestsrc
   EXPECT_FALSE( input->framerate.isValid() );
 }
 
+// An unknown format must fail loading instead of producing an empty StreamInput in
+// createInput, which the rebuild loop would retry forever as a transient fault.
+TEST( VideoTestSrcInputConfigurationTest, RejectsUnknownFormat )
+{
+  auto config = YAML::Load( R"(
+type: videotestsrc
+format: not_a_format
+)" );
+
+  EXPECT_THROW( ros_camera_server::VideoTestSrcInputConfiguration::from_yaml_shared( config ),
+                ros_camera_server::ConfigurationLoadError );
+}
+
+// Non-positive dimensions produce unsatisfiable caps that never negotiate
+// (0 fps restart loop); they must fail loading like an unknown format does.
+TEST( VideoTestSrcInputConfigurationTest, RejectsNonPositiveDimensions )
+{
+  auto zero_width = YAML::Load( R"(
+type: videotestsrc
+width: 0
+)" );
+  EXPECT_THROW( ros_camera_server::VideoTestSrcInputConfiguration::from_yaml_shared( zero_width ),
+                ros_camera_server::ConfigurationLoadError );
+
+  auto negative_height = YAML::Load( R"(
+type: videotestsrc
+height: -480
+)" );
+  EXPECT_THROW( ros_camera_server::VideoTestSrcInputConfiguration::from_yaml_shared( negative_height ),
+                ros_camera_server::ConfigurationLoadError );
+}
+
 TEST( RtpOutputConfigurationTest, ParsesAndRoundTrips )
 {
   auto config = YAML::Load( R"(

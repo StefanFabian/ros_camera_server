@@ -77,6 +77,15 @@ public:
   std::chrono::milliseconds uptime() const;
 
 private:
+  /// Notify outputs (onPipelineStopping) and set the pipeline to GST_STATE_NULL. Both stop()
+  /// and the start() failure path route their NULL transitions through here so client transports
+  /// (e.g. WebRTC sessions) are always torn down before the elements go to NULL.
+  void setPipelineNull();
+
+  /// Roll back partially constructed state after buildPipeline() throws so isBuilt() stays false
+  /// and the next rebuild attempt starts clean instead of starting a half-built pipeline.
+  void resetBuildState();
+
   static gboolean onBusMessage( GstBus *bus, GstMessage *msg, gpointer user_data );
 
   static GstPadProbeReturn inputBufferCallback( GstPad *pad, GstPadProbeInfo *info,

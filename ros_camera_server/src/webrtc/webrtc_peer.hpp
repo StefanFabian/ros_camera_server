@@ -19,7 +19,6 @@
 #define ROS_CAMERA_SERVER_WEBRTC_PEER_HPP
 
 #include "ros_camera_server/helpers/json.hpp"
-#include "signaling_server.hpp"
 
 #include <gst/gst.h>
 #include <gst/sdp/sdp.h>
@@ -34,6 +33,9 @@ namespace ros_camera_server
 /// Manages a single WebRTC peer connection (webrtcbin).
 /// Handles SDP offer/answer negotiation and ICE candidate exchange
 /// over a WebSocket connection provided by the SignalingServer.
+/// Async webrtcbin callbacks (signals and promises) hold their own refs on the
+/// webrtcbin and the connection instead of referencing this peer, so they remain
+/// safe if they fire while the peer is destroyed during session teardown.
 class WebRTCPeer
 {
 public:
@@ -65,16 +67,6 @@ private:
 
   void handleSdp( const std::string &type, const std::string &sdp_str );
   void handleIceCandidate( guint mline_index, const std::string &candidate );
-
-  void sendSdp( const std::string &type, const std::string &sdp_str );
-  void sendIceCandidate( guint mline_index, const gchar *candidate );
-
-  // GStreamer signal callbacks
-  static void onNegotiationNeeded( GstElement *element, gpointer user_data );
-  static void onIceCandidate( GstElement *webrtc, guint mline_index, gchar *candidate,
-                              gpointer user_data );
-  static void onOfferCreated( GstPromise *promise, gpointer user_data );
-  static void onAnswerCreated( GstPromise *promise, gpointer user_data );
 
   gulong negotiation_needed_handler_ = 0;
   gulong ice_candidate_handler_ = 0;

@@ -32,8 +32,21 @@ VideoTestSrcInputConfiguration::from_yaml_shared( const YAML::Node &config )
   result->loadSharedFromYaml( config );
   result->pattern = config["pattern"].as<std::string>( "smpte" );
   result->format = config["format"].as<std::string>( "" );
+  // Validate the format here so a typo fails loading fast. gst_video_format_from_string is
+  // a static table lookup and needs no gst_init. The pattern is validated in createInput
+  // because that requires a live element.
+  if ( !result->format.empty() &&
+       gst_video_format_from_string( result->format.c_str() ) == GST_VIDEO_FORMAT_UNKNOWN ) {
+    throw ConfigurationLoadError( "videotestsrc input: unknown format '" + result->format +
+                                  "'. See GstVideoFormat for valid formats." );
+  }
   result->width = config["width"].as<int>( 640 );
   result->height = config["height"].as<int>( 480 );
+  if ( result->width <= 0 || result->height <= 0 ) {
+    throw ConfigurationLoadError( "videotestsrc input: width and height must be positive, got " +
+                                  std::to_string( result->width ) + "x" +
+                                  std::to_string( result->height ) );
+  }
   return result;
 }
 
@@ -77,13 +90,6 @@ StreamInput VideoTestSrcInputConfiguration::createInput( const rclcpp::Node::Sha
   GstCaps *caps = gst_caps_new_simple( "video/x-raw", "width", G_TYPE_INT, width, "height",
                                        G_TYPE_INT, height, nullptr );
   if ( !format.empty() ) {
-    if ( gst_video_format_from_string( format.c_str() ) == GST_VIDEO_FORMAT_UNKNOWN ) {
-      SERVER_LOG_ERROR( "Unknown videotestsrc format: %s. See GstVideoFormat for valid formats.",
-                        format.c_str() );
-      gst_caps_unref( caps );
-      gst_object_unref( src );
-      return {};
-    }
     gst_caps_set_simple( caps, "format", G_TYPE_STRING, format.c_str(), nullptr );
   }
   if ( framerate.isValid() ) {
@@ -91,6 +97,12 @@ StreamInput VideoTestSrcInputConfiguration::createInput( const rclcpp::Node::Sha
                          framerate.denominator, nullptr );
   }
   GstElement *capsfilter = gst_element_factory_make( "capsfilter", "capsfilter" );
+  if ( !capsfilter ) {
+    SERVER_LOG_ERROR( "Failed to create capsfilter element for videotestsrc input" );
+    gst_caps_unref( caps );
+    gst_object_unref( src );
+    return {};
+  }
   g_object_set( G_OBJECT( capsfilter ), "caps", caps, nullptr );
   gst_caps_unref( caps );
 

@@ -62,6 +62,12 @@ private:
   /// Check if any camera has WebRTC outputs and start signaling server if needed.
   void initializeWebRTC();
 
+  /// Build the given (not yet built) pipeline, wire up its WebRTC outputs and start it.
+  /// Must run on the GStreamer thread: buildPipeline() installs a bus watch and other GSources
+  /// that bind to the thread-default GMainContext, and the signaling server is only safe to touch
+  /// from that context. checkAndRepair() dispatches this onto the GStreamer main loop.
+  void rebuildPipeline( CameraPipeline *pipeline );
+
   /// Update flow control valves based on client counts.
   void updateFlowControl();
 

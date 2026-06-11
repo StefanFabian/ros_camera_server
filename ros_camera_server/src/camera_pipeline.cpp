@@ -75,6 +75,21 @@ void CameraPipeline::buildPipeline()
     return;
   }
   SERVER_LOG_INFO_STREAM( "Creating pipeline for camera: " + configuration_.id );
+  // input_ is assigned at step 1, but isBuilt() keys off it, so a throw in a later step would
+  // latch isBuilt() true on a half-built pipeline that checkAndRepair would then start() and
+  // never rebuild. This guard rolls back partial construction on any failure (see
+  // resetBuildState) so the next attempt retries from scratch; it is dismissed once the build
+  // completes.
+  struct RollbackGuard {
+    CameraPipeline *self = nullptr;
+    ~RollbackGuard()
+    {
+      if ( self != nullptr )
+        self->resetBuildState();
+    }
+    void dismiss() { self = nullptr; }
+  } rollback_guard{ this };
+
   pipeline_ = GST_BIN( gst_pipeline_new( configuration_.id.c_str() ) );
   if ( pipeline_ == nullptr )
     throw PipelineBuildError( "Failed to create pipeline for camera: " + configuration_.id );
@@ -118,6 +133,26 @@ void CameraPipeline::buildPipeline()
   GstBus *bus = gst_element_get_bus( GST_ELEMENT( pipeline_.get() ) );
   gst_bus_add_watch( bus, onBusMessage, this );
   gst_object_unref( bus );
+
+  rollback_guard.dismiss();
+}
+
+void CameraPipeline::resetBuildState()
+{
+  // Mirror the destructor's teardown order: release tee request pads while their tees are still
+  // alive, drop the outputs (their destructors touch elements still owned by pipeline_), reset
+  // the flow controller (it holds a pointer into outputs_), then release the pipeline, which
+  // frees every element added to it. Nulling input_.bin last makes isBuilt() report false again.
+  for ( auto &[tee, pad] : tee_request_pads_ ) {
+    if ( tee && pad )
+      gst_element_release_request_pad( tee, pad );
+  }
+  tee_request_pads_.clear();
+  flow_controller_ = {};
+  outputs_.clear();
+  input_probe_ = 0;
+  input_ = {};
+  pipeline_ = nullptr; // unref the pipeline, freeing every element added to it
 }
 
 GstState CameraPipeline::getState() const
@@ -129,20 +164,36 @@ GstState CameraPipeline::getState() const
 
 void CameraPipeline::start()
 {
+  // Record the first attempt time even on failure so checkAndRepair() retries instead of
+  // waiting forever in the uptime() == 0 "giving it more time" branch. Only stamp it once
+  // per start/stop cycle: resetting it on every retry would pin uptime() near zero, so the
+  // ">10s in non-PLAYING -> restart()" escalation would never be reached. stop()/restart()
+  // clear start_time_, so the next cycle stamps a fresh time.
+  if ( start_time_ == clock::time_point() )
+    start_time_ = clock::now();
   GstStateChangeReturn result =
       gst_element_set_state( GST_ELEMENT( pipeline_.get() ), GST_STATE_PLAYING );
-  if ( result != GST_STATE_CHANGE_SUCCESS && result != GST_STATE_CHANGE_ASYNC ) {
+  if ( result != GST_STATE_CHANGE_SUCCESS && result != GST_STATE_CHANGE_ASYNC &&
+       result != GST_STATE_CHANGE_NO_PREROLL ) {
     SERVER_LOG_ERROR(
-        "Failed to set pipeline to READY state for camera: %s.\nPipeline state change result: %s",
+        "Failed to set pipeline to PLAYING state for camera: %s.\nPipeline state change result: %s",
         configuration_.id.c_str(), gst_element_state_change_return_get_name( result ) );
-    return;
+    // Reset partially-transitioned elements so the next start attempt begins clean. Route through
+    // setPipelineNull() so outputs drop their client transports (e.g. WebRTC DTLS/ICE) before the
+    // NULL transition instead of being left attached to a dead pipeline.
+    setPipelineNull();
   }
-  start_time_ = clock::now();
+}
+
+void CameraPipeline::setPipelineNull()
+{
+  for ( const auto &output : outputs_ ) { output->onPipelineStopping(); }
+  gst_element_set_state( GST_ELEMENT( pipeline_.get() ), GST_STATE_NULL );
 }
 
 void CameraPipeline::stop()
 {
-  gst_element_set_state( GST_ELEMENT( pipeline_.get() ), GST_STATE_NULL );
+  setPipelineNull();
   start_time_ = clock::time_point();
   // Invalidate immediately so an early buffer of the next session can't use the previous
   // session's base_time before the (async) PLAYING bus message refreshes it.
