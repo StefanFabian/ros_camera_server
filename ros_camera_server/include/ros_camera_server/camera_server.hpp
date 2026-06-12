@@ -23,6 +23,7 @@
 #include <functional>
 #include <memory>
 #include <rclcpp/node.hpp>
+#include <unordered_map>
 
 namespace ros_camera_server
 {
@@ -68,6 +69,13 @@ private:
   /// from that context. checkAndRepair() dispatches this onto the GStreamer main loop.
   void rebuildPipeline( CameraPipeline *pipeline );
 
+  /// Run fn on the GStreamer thread's main loop.
+  void invokeOnGstThread( std::function<void()> fn );
+
+  /// Dispatch a pipeline restart to the GStreamer thread and reset the pipeline's
+  /// stuck-output counter.
+  void restartPipeline( CameraPipeline *pipeline );
+
   /// Update flow control valves based on client counts.
   void updateFlowControl();
 
@@ -82,8 +90,12 @@ private:
   rclcpp::TimerBase::SharedPtr check_and_repair_timer_;
   rclcpp::TimerBase::SharedPtr flow_control_timer_;
   SmartGstPointer<GstObject> clock_provider_;
-  std::atomic<bool> initialized_;
+  std::atomic<bool> initialized_{ false };
   GMainLoop *g_main_loop_ = nullptr;
+  /// Consecutive checkAndRepair ticks an output of the pipeline was stuck (clients connected and
+  /// data flow enabled, but 0 fps while the input produces frames). Only touched on the ROS
+  /// timer thread.
+  std::unordered_map<CameraPipeline *, int> stuck_output_ticks_;
 };
 } // namespace ros_camera_server
 

@@ -124,11 +124,19 @@ CameraServer::~CameraServer()
   diagnostic_timer_.reset();
   status_timer_.reset();
   flow_control_timer_.reset();
-  SERVER_LOG_DEBUG( "Stopping gstreamer pipelines" );
-  for ( auto &pipeline : pipelines_ ) { pipeline->stop(); }
+  // The GStreamer thread creates g_main_loop_ and runs it only after initialization completes.
+  // Destruction during startup (e.g. the process is shut down right after launch) must wait for
+  // that, otherwise g_main_loop_quit( nullptr ) is a no-op, the loop runs forever and the join
+  // below never returns.
+  while ( !initialized_.load() ) { std::this_thread::sleep_for( 1ms ); }
   SERVER_LOG_DEBUG( "Stopping gstreamer mainloop" );
   g_main_loop_quit( g_main_loop_ );
   gstreamer_thread_.join();
+  // Stop the pipelines only after the GStreamer thread is joined: its signaling handlers add and
+  // remove per-client elements on these pipelines, and a concurrent state cascade from this
+  // thread would race them. With the loop stopped nothing else touches the pipelines.
+  SERVER_LOG_DEBUG( "Stopping gstreamer pipelines" );
+  for ( auto &pipeline : pipelines_ ) { pipeline->stop(); }
   // Destroy the pipelines (and with them the WebRTC sessions and their webrtcbins) before
   // stopping the signaling server. Dropping the webrtcbins joins their ICE threads, so no late
   // transport-state callback can dispatch onto the signaling context while stop() is unreffing it.
@@ -211,6 +219,30 @@ void CameraServer::updateStatus()
   SERVER_LOG_INFO( "%s", status_stream.str().c_str() );
 }
 
+/// Consecutive checkAndRepair ticks (3s apart) an output must be stuck before the pipeline is
+/// restarted. 5 ticks ≈ 15s, safely past the 10s WebRTC establish timeout so sessions that are
+/// still negotiating (legitimately 0 fps) are closed by that timeout before this rule can fire.
+static constexpr int STUCK_OUTPUT_TICKS_BEFORE_RESTART = 5;
+
+void CameraServer::invokeOnGstThread( std::function<void()> fn )
+{
+  using Request = std::function<void()>;
+  g_main_context_invoke_full(
+      g_main_loop_get_context( g_main_loop_ ), G_PRIORITY_DEFAULT,
+      []( gpointer data ) -> gboolean {
+        ( *static_cast<Request *>( data ) )();
+        return G_SOURCE_REMOVE;
+      },
+      new Request( std::move( fn ) ),
+      []( gpointer data ) { delete static_cast<Request *>( data ); } );
+}
+
+void CameraServer::restartPipeline( CameraPipeline *pipeline )
+{
+  stuck_output_ticks_[pipeline] = 0;
+  invokeOnGstThread( [pipeline]() { pipeline->restart(); } );
+}
+
 void CameraServer::checkAndRepair()
 {
 
@@ -226,19 +258,7 @@ void CameraServer::checkAndRepair()
       // default context (dead error monitoring) and race the GStreamer thread reading the
       // half-built pipeline. The build is asynchronous, so skip this pipeline for the rest of the
       // tick; later ticks see it built (or retry it if the build failed).
-      struct RebuildRequest {
-        CameraServer *server;
-        CameraPipeline *pipeline;
-      };
-      g_main_context_invoke_full(
-          g_main_loop_get_context( g_main_loop_ ), G_PRIORITY_DEFAULT,
-          []( gpointer data ) -> gboolean {
-            auto *req = static_cast<RebuildRequest *>( data );
-            req->server->rebuildPipeline( req->pipeline );
-            return G_SOURCE_REMOVE;
-          },
-          new RebuildRequest{ this, pipeline.get() },
-          []( gpointer data ) { delete static_cast<RebuildRequest *>( data ); } );
+      invokeOnGstThread( [this, pipeline = pipeline.get()]() { rebuildPipeline( pipeline ); } );
       continue;
     }
 
@@ -253,7 +273,7 @@ void CameraServer::checkAndRepair()
         }
         SERVER_LOG_WARN( "No input frames received for pipeline '%s', restarting.",
                          pipeline->id().c_str() );
-        pipeline->restart();
+        restartPipeline( pipeline.get() );
         continue;
       }
 
@@ -261,6 +281,7 @@ void CameraServer::checkAndRepair()
       double max_processing_time_s = node_->get_parameter( "max_processing_time" ).as_double();
       auto max_processing_time =
           std::chrono::microseconds( static_cast<int64_t>( max_processing_time_s * 1e6 ) );
+      bool restarted = false;
       for ( size_t i = 0; i < stats.output_statistics.size(); ++i ) {
         const auto &output_stats = stats.output_statistics[i];
         if ( output_stats.processing_time.count() < 0 )
@@ -292,21 +313,50 @@ void CameraServer::checkAndRepair()
         }
         breakdown << " Restarting pipeline.";
         SERVER_LOG_WARN( "%s", breakdown.str().c_str() );
-        pipeline->restart();
+        restartPipeline( pipeline.get() );
+        restarted = true;
         break;
+      }
+      if ( restarted )
+        continue;
+
+      // Detect a wedged output: clients are connected and data flow is enabled, the input
+      // produces frames (checked above), but nothing reaches the output.
+      bool output_stuck = false;
+      bool any_output_delivering = false;
+      for ( size_t i = 0; i < stats.output_statistics.size(); ++i ) {
+        const auto &output_stats = stats.output_statistics[i];
+        if ( !pipeline->isOutputFlowing( i ) )
+          continue;
+        if ( output_stats.fps > 0.0f )
+          any_output_delivering = true;
+        else if ( output_stats.client_count > 0 )
+          output_stuck = true;
+      }
+      if ( output_stuck ) {
+        if ( ++stuck_output_ticks_[pipeline.get()] >= STUCK_OUTPUT_TICKS_BEFORE_RESTART ) {
+          SERVER_LOG_WARN(
+              "Pipeline '%s' has connected clients but an output produced no frames for >%ds "
+              "while the input is live, restarting.",
+              pipeline->id().c_str(), STUCK_OUTPUT_TICKS_BEFORE_RESTART * 3 );
+          restartPipeline( pipeline.get() );
+        }
+      } else if ( any_output_delivering ) {
+        stuck_output_ticks_[pipeline.get()] = 0;
       }
       continue;
     }
     if ( pipeline->uptime() > 10s ) {
       SERVER_LOG_WARN( "Pipeline '%s' has been in non-PLAYING state for >10s, restarting.",
                        pipeline->id().c_str() );
-      pipeline->restart();
+      restartPipeline( pipeline.get() );
     } else if ( pipeline->uptime() < 3s ) {
       SERVER_LOG_DEBUG_STREAM( pipeline->id()
                                << " is not in PLAYING state yet, giving it more time." );
     } else {
       SERVER_LOG_DEBUG_STREAM( pipeline->id() << " is not in PLAYING state, attempting to start." );
-      pipeline->start();
+      // Start on the GStreamer thread for the same reason restarts run there.
+      invokeOnGstThread( [pipeline = pipeline.get()]() { pipeline->start(); } );
     }
   }
 }

@@ -496,17 +496,14 @@ void WebrtcOutput::addPeerBranch( SoupWebsocketConnection *conn )
   gst_bin_add_many( output_bin, queue, rtppay, webrtcbin, nullptr );
   gst_element_link( queue, rtppay );
 
-  // Request a new src pad from the tee and link to the queue
-  GstPad *tee_src_pad = gst_element_request_pad_simple( tee_, "src_%u" );
-  GstPad *queue_sink_pad = gst_element_get_static_pad( queue, "sink" );
-  GstPadLinkReturn link_ret = gst_pad_link( tee_src_pad, queue_sink_pad );
-  gst_object_unref( queue_sink_pad );
-
-  // Releases the request pad and tears the half-built peer branch back down. Used by every
-  // failure path below so a future per-peer element is unwound in one place, not several.
-  auto cleanup_partial_branch = [&] {
-    gst_element_release_request_pad( tee_, tee_src_pad );
-    gst_object_unref( tee_src_pad );
+  // Tears the half-built peer branch back down. Used by every failure path below so a future
+  // per-peer element is unwound in one place, not several. The tee pad is passed in because
+  // the tee is only linked at the very end; earlier failure paths have no pad to release.
+  auto cleanup_partial_branch = [&]( GstPad *tee_src_pad ) {
+    if ( tee_src_pad != nullptr ) {
+      gst_element_release_request_pad( tee_, tee_src_pad );
+      gst_object_unref( tee_src_pad );
+    }
     peer.reset();
     removePeerElements( output_bin, queue, rtppay, webrtcbin );
     // No session is stored on these paths, so close the connection here; otherwise the client
@@ -514,16 +511,8 @@ void WebrtcOutput::addPeerBranch( SoupWebsocketConnection *conn )
     SignalingServer::closeIfOpen( conn, SOUP_WEBSOCKET_CLOSE_NORMAL, "WebRTC setup failed" );
   };
 
-  if ( link_ret != GST_PAD_LINK_OK ) {
-    SERVER_LOG_ERROR( "WebRTC: failed to link tee to queue (error: %d)", link_ret );
-    cleanup_partial_branch();
-    return;
-  }
-
-  // Sync states BEFORE linking to webrtcbin: it defers on-negotiation-needed while
-  // still in NULL, so the elements must have left NULL for the link to trigger it.
-  gst_element_sync_state_with_parent( queue );
-  gst_element_sync_state_with_parent( rtppay );
+  // Sync webrtcbin BEFORE linking rtppay to it: it defers on-negotiation-needed while
+  // still in NULL, so it must have left NULL for the link to trigger it.
   gst_element_sync_state_with_parent( webrtcbin );
 
   // Fixate the RTP caps before handing them to webrtcbin: rtph264pay/rtph265pay advertise
@@ -537,7 +526,7 @@ void WebrtcOutput::addPeerBranch( SoupWebsocketConnection *conn )
   gst_caps_unref( rtp_caps );
   if ( !linked ) {
     SERVER_LOG_ERROR( "WebRTC: failed to link rtppay to webrtcbin" );
-    cleanup_partial_branch();
+    cleanup_partial_branch( nullptr );
     return;
   }
 
@@ -581,6 +570,25 @@ void WebrtcOutput::addPeerBranch( SoupWebsocketConnection *conn )
       },
       this, nullptr );
   gst_object_unref( rtppay_src_pad );
+
+  // Activate the remaining branch elements, then link the tee LAST, when the whole branch
+  // is linked and active. Linking the tee earlier opens a window where it pushes a buffer
+  // into a still-inactive pad; the resulting GST_FLOW_FLUSHING is fatal for the tee
+  // (allow-not-linked only forgives NOT_LINKED), latches into every queue upstream and
+  // silently pauses the feeding streaming thread - the entire output freezes at 0 fps
+  // without any bus error, for every current and future session.
+  gst_element_sync_state_with_parent( rtppay );
+  gst_element_sync_state_with_parent( queue );
+
+  GstPad *tee_src_pad = gst_element_request_pad_simple( tee_, "src_%u" );
+  GstPad *queue_sink_pad = gst_element_get_static_pad( queue, "sink" );
+  GstPadLinkReturn link_ret = gst_pad_link( tee_src_pad, queue_sink_pad );
+  gst_object_unref( queue_sink_pad );
+  if ( link_ret != GST_PAD_LINK_OK ) {
+    SERVER_LOG_ERROR( "WebRTC: failed to link tee to queue (error: %d)", link_ret );
+    cleanup_partial_branch( tee_src_pad );
+    return;
+  }
 
   // Request an immediate keyframe so the new client can start decoding right away
   // instead of waiting for the next periodic IDR. Sources that cannot comply

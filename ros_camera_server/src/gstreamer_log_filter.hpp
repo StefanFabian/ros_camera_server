@@ -44,7 +44,7 @@ inline const std::regex GST_LOG_REGEX_WEBRTC_RESOLVE_FAIL =
                 "Name or service not known",
                 std::regex::optimize );
 
-inline constexpr std::array<IgnoredGStreamerLog, 9> ignored_gstreamer_logs = { {
+inline constexpr std::array<IgnoredGStreamerLog, 10> ignored_gstreamer_logs = { {
     { "vadisplay", "vaInitialize: unknown libva error", LogMatchMode::Exact },
     { "vapostproc", "Can't keep DAR!", LogMatchMode::Exact },
     { "v4l2src", "Can't give latency since framerate isn't fixated !", LogMatchMode::Exact },
@@ -57,6 +57,7 @@ inline constexpr std::array<IgnoredGStreamerLog, 9> ignored_gstreamer_logs = { {
     { "rtpsession", "Can't determine running time for this packet without knowing configured latency",
       LogMatchMode::Exact },
     { "webrtcnice", "", LogMatchMode::Regex, &GST_LOG_REGEX_WEBRTC_RESOLVE_FAIL },
+    { "webrtcbin", "to merge ICE candidate", LogMatchMode::Contains },
 } };
 
 inline bool shouldIgnoreGStreamerLog( std::string_view category, std::string_view message )
