@@ -16,7 +16,7 @@ include(FindPkgConfig)
 pkg_check_modules(GST REQUIRED
   gstreamer-1.0 gstreamer-app-1.0 gstreamer-net-1.0
   gstreamer-plugins-base-1.0 gstreamer-pbutils-1.0 gstreamer-rtp-1.0
-  gstreamer-webrtc-1.0 gstreamer-sdp-1.0)
+  gstreamer-video-1.0 gstreamer-webrtc-1.0 gstreamer-sdp-1.0)
 pkg_check_modules(SOUP REQUIRED libsoup-3.0)
 
 
@@ -35,6 +35,7 @@ set(SOURCES
   src/inputs/ros2_input.cpp
   src/inputs/rtp_input.cpp
   src/inputs/v4l2_input.cpp
+  src/inputs/videotestsrc_input.cpp
   src/outputs/pipeline_output.cpp
   src/outputs/ros2_output.cpp
   src/outputs/rtp_output.cpp
@@ -148,6 +149,12 @@ if(BUILD_TESTING)
   target_link_libraries(test_pipeline_monitor ${PROJECT_NAME})
   target_include_directories(test_pipeline_monitor PRIVATE src)
 
+  # Fault-injection scenarios with real clients; several wait on the 10s establish timeout
+  # and multiple pipeline restarts, so this needs more than the default 60s.
+  ament_add_gtest(test_webrtc_robustness test/test_webrtc_robustness.cpp TIMEOUT 300)
+  target_link_libraries(test_webrtc_robustness ${PROJECT_NAME} ${SOUP_LIBRARIES})
+  target_include_directories(test_webrtc_robustness PRIVATE src)
+
   ament_add_gtest(test_gstreamer_log_filter test/test_gstreamer_log_filter.cpp)
   target_include_directories(test_gstreamer_log_filter PRIVATE src)
 
@@ -166,7 +173,8 @@ if(BUILD_TESTING)
       test_pipeline_deduplication
       test_signaling_server
       test_pipeline_monitor
-      test_gstreamer_log_filter)
+      test_gstreamer_log_filter
+      test_webrtc_robustness)
   set(_ros_camera_server_lsan_supp "${CMAKE_CURRENT_SOURCE_DIR}/test/lsan.supp")
   foreach(_test_name IN LISTS _ros_camera_server_test_targets)
     if(TEST ${_test_name})

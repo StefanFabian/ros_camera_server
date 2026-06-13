@@ -21,6 +21,7 @@
 #include "ros_camera_server/inputs/ros2_input.hpp"
 #include "ros_camera_server/inputs/rtp_input.hpp"
 #include "ros_camera_server/inputs/v4l2_input.hpp"
+#include "ros_camera_server/inputs/videotestsrc_input.hpp"
 #include <mutex>
 
 namespace ros_camera_server
@@ -34,6 +35,7 @@ void PipelineInputFactory::registerDefaultInputs()
     registerInput( "ros2", Ros2InputConfiguration::from_yaml_shared );
     registerInput( "rtp", RtpInputConfiguration::from_yaml_shared );
     registerInput( "v4l2", V4l2InputConfiguration::from_yaml_shared );
+    registerInput( "videotestsrc", VideoTestSrcInputConfiguration::from_yaml_shared );
   } );
 }
 

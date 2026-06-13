@@ -124,15 +124,30 @@ CameraServer::~CameraServer()
   diagnostic_timer_.reset();
   status_timer_.reset();
   flow_control_timer_.reset();
+  // The GStreamer thread creates g_main_loop_ and runs it only after initialization completes.
+  // Destruction during startup (e.g. the process is shut down right after launch) must wait for
+  // that, otherwise g_main_loop_quit( nullptr ) is a no-op, the loop runs forever and the join
+  // below never returns.
+  while ( !initialized_.load() ) { std::this_thread::sleep_for( 1ms ); }
+  SERVER_LOG_DEBUG( "Stopping gstreamer mainloop" );
+  g_main_loop_quit( g_main_loop_ );
+  gstreamer_thread_.join();
+  // Stop the pipelines only after the GStreamer thread is joined: its signaling handlers add and
+  // remove per-client elements on these pipelines, and a concurrent state cascade from this
+  // thread would race them. With the loop stopped nothing else touches the pipelines.
   SERVER_LOG_DEBUG( "Stopping gstreamer pipelines" );
   for ( auto &pipeline : pipelines_ ) { pipeline->stop(); }
+  // Destroy the pipelines (and with them the WebRTC sessions and their webrtcbins) before
+  // stopping the signaling server. Dropping the webrtcbins joins their ICE threads, so no late
+  // transport-state callback can dispatch onto the signaling context while stop() is unreffing it.
+  pipelines_.clear();
+  // libsoup is not thread-safe: stop the signaling server only after the thread running its
+  // context has been joined and the webrtcbin/ICE threads are gone, so nothing touches it
+  // concurrently. WebSocket close frames are not delivered; clients see the TCP connection drop.
   if ( signaling_server_ ) {
     signaling_server_->stop();
     signaling_server_.reset();
   }
-  SERVER_LOG_DEBUG( "Stopping gstreamer mainloop" );
-  g_main_loop_quit( g_main_loop_ );
-  gstreamer_thread_.join();
   gst_debug_remove_log_function_by_data( this );
   pipeline_monitor_->processLogMessages();
 }
@@ -204,6 +219,30 @@ void CameraServer::updateStatus()
   SERVER_LOG_INFO( "%s", status_stream.str().c_str() );
 }
 
+/// Consecutive checkAndRepair ticks (3s apart) an output must be stuck before the pipeline is
+/// restarted. 5 ticks ≈ 15s, safely past the 10s WebRTC establish timeout so sessions that are
+/// still negotiating (legitimately 0 fps) are closed by that timeout before this rule can fire.
+static constexpr int STUCK_OUTPUT_TICKS_BEFORE_RESTART = 5;
+
+void CameraServer::invokeOnGstThread( std::function<void()> fn )
+{
+  using Request = std::function<void()>;
+  g_main_context_invoke_full(
+      g_main_loop_get_context( g_main_loop_ ), G_PRIORITY_DEFAULT,
+      []( gpointer data ) -> gboolean {
+        ( *static_cast<Request *>( data ) )();
+        return G_SOURCE_REMOVE;
+      },
+      new Request( std::move( fn ) ),
+      []( gpointer data ) { delete static_cast<Request *>( data ); } );
+}
+
+void CameraServer::restartPipeline( CameraPipeline *pipeline )
+{
+  stuck_output_ticks_[pipeline] = 0;
+  invokeOnGstThread( [pipeline]() { pipeline->restart(); } );
+}
+
 void CameraServer::checkAndRepair()
 {
 
@@ -212,16 +251,15 @@ void CameraServer::checkAndRepair()
   SERVER_LOG_DEBUG( "Checking pipelines for issues" );
   for ( const auto &pipeline : pipelines_ ) {
     if ( !pipeline->isBuilt() ) {
-      SERVER_LOG_INFO( "Trying to build pipeline for camera '%s' again.", pipeline->id().c_str() );
-      try {
-        pipeline->buildPipeline();
-        // Reinitialize WebRTC outputs if needed
-        initializeWebRTC();
-      } catch ( PipelineBuildError &e ) {
-        SERVER_LOG_ERROR_STREAM( "Failed to rebuild pipeline for camera '"
-                                 << pipeline->id() << "'! Error: " << e.what() );
-        continue;
-      }
+      // Build, wire up WebRTC and start on the GStreamer thread, not here on the ROS timer
+      // thread: buildPipeline() installs a bus watch (and other GSources) that bind to the
+      // thread-default GMainContext, and the signaling server / endpoints_ are only safe to touch
+      // from that context. Building here would attach the bus watch to the never-iterated global
+      // default context (dead error monitoring) and race the GStreamer thread reading the
+      // half-built pipeline. The build is asynchronous, so skip this pipeline for the rest of the
+      // tick; later ticks see it built (or retry it if the build failed).
+      invokeOnGstThread( [this, pipeline = pipeline.get()]() { rebuildPipeline( pipeline ); } );
+      continue;
     }
 
     if ( pipeline->getState() == GST_STATE_PLAYING ) {
@@ -235,7 +273,7 @@ void CameraServer::checkAndRepair()
         }
         SERVER_LOG_WARN( "No input frames received for pipeline '%s', restarting.",
                          pipeline->id().c_str() );
-        pipeline->restart();
+        restartPipeline( pipeline.get() );
         continue;
       }
 
@@ -243,6 +281,7 @@ void CameraServer::checkAndRepair()
       double max_processing_time_s = node_->get_parameter( "max_processing_time" ).as_double();
       auto max_processing_time =
           std::chrono::microseconds( static_cast<int64_t>( max_processing_time_s * 1e6 ) );
+      bool restarted = false;
       for ( size_t i = 0; i < stats.output_statistics.size(); ++i ) {
         const auto &output_stats = stats.output_statistics[i];
         if ( output_stats.processing_time.count() < 0 )
@@ -274,21 +313,50 @@ void CameraServer::checkAndRepair()
         }
         breakdown << " Restarting pipeline.";
         SERVER_LOG_WARN( "%s", breakdown.str().c_str() );
-        pipeline->restart();
+        restartPipeline( pipeline.get() );
+        restarted = true;
         break;
+      }
+      if ( restarted )
+        continue;
+
+      // Detect a wedged output: clients are connected and data flow is enabled, the input
+      // produces frames (checked above), but nothing reaches the output.
+      bool output_stuck = false;
+      bool any_output_delivering = false;
+      for ( size_t i = 0; i < stats.output_statistics.size(); ++i ) {
+        const auto &output_stats = stats.output_statistics[i];
+        if ( !pipeline->isOutputFlowing( i ) )
+          continue;
+        if ( output_stats.fps > 0.0f )
+          any_output_delivering = true;
+        else if ( output_stats.client_count > 0 )
+          output_stuck = true;
+      }
+      if ( output_stuck ) {
+        if ( ++stuck_output_ticks_[pipeline.get()] >= STUCK_OUTPUT_TICKS_BEFORE_RESTART ) {
+          SERVER_LOG_WARN(
+              "Pipeline '%s' has connected clients but an output produced no frames for >%ds "
+              "while the input is live, restarting.",
+              pipeline->id().c_str(), STUCK_OUTPUT_TICKS_BEFORE_RESTART * 3 );
+          restartPipeline( pipeline.get() );
+        }
+      } else if ( any_output_delivering ) {
+        stuck_output_ticks_[pipeline.get()] = 0;
       }
       continue;
     }
     if ( pipeline->uptime() > 10s ) {
       SERVER_LOG_WARN( "Pipeline '%s' has been in non-PLAYING state for >10s, restarting.",
                        pipeline->id().c_str() );
-      pipeline->restart();
+      restartPipeline( pipeline.get() );
     } else if ( pipeline->uptime() < 3s ) {
       SERVER_LOG_DEBUG_STREAM( pipeline->id()
                                << " is not in PLAYING state yet, giving it more time." );
     } else {
       SERVER_LOG_DEBUG_STREAM( pipeline->id() << " is not in PLAYING state, attempting to start." );
-      pipeline->start();
+      // Start on the GStreamer thread for the same reason restarts run there.
+      invokeOnGstThread( [pipeline = pipeline.get()]() { pipeline->start(); } );
     }
   }
 }
@@ -339,6 +407,33 @@ void CameraServer::initializeWebRTC()
       }
     }
   }
+}
+
+void CameraServer::rebuildPipeline( CameraPipeline *pipeline )
+{
+  if ( pipeline->isBuilt() )
+    return; // already rebuilt by an earlier tick's request
+  SERVER_LOG_INFO( "Trying to build pipeline for camera '%s' again.", pipeline->id().c_str() );
+  // The monotonic system clock is the GStreamer singleton configured in the constructor; the
+  // pipelines built at startup share it, so reuse it here to give the rebuilt pipeline the same
+  // clock for consistent capture timestamps. gst_system_clock_obtain() refs it for us.
+  GstClock *system_clock = gst_system_clock_obtain();
+  bool built = false;
+  try {
+    pipeline->buildPipeline();
+    pipeline->useClock( system_clock );
+    built = true;
+  } catch ( PipelineBuildError &e ) {
+    SERVER_LOG_ERROR_STREAM( "Failed to rebuild pipeline for camera '"
+                             << pipeline->id() << "'! Error: " << e.what() );
+  }
+  gst_object_unref( system_clock );
+  if ( !built )
+    return;
+  // Wire up WebRTC outputs (creates the signaling server on first use; idempotent for already
+  // wired pipelines), then start the freshly built pipeline.
+  initializeWebRTC();
+  pipeline->start();
 }
 
 void CameraServer::updateFlowControl()

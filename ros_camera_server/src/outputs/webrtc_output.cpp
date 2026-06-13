@@ -21,10 +21,12 @@
 
 #include "../logging.hpp"
 #include "../webrtc/signaling_server.hpp"
+#include "../webrtc/webrtc_callback_context.hpp"
 #include "../webrtc/webrtc_peer.hpp"
 
 #include <atomic>
 #include <gst/rtp/gstrtpbuffer.h>
+#include <gst/video/video.h>
 #include <limits>
 #include <map>
 
@@ -44,6 +46,107 @@ static const char *rtpPayloaderForCodec( const std::string &codec )
   return nullptr;
 }
 
+namespace
+{
+
+/// If a peer has not established its transport within this time, its signaling
+/// connection is closed so the session is torn down and the client can retry.
+constexpr guint PEER_ESTABLISH_TIMEOUT_SECONDS = 10;
+
+/// Remove the per-peer elements from the output bin, then set them to NULL.
+/// Order matters: removing before NULL prevents a concurrent pipeline state cascade
+/// (e.g. a restart on another thread) from bumping an already-NULL child back to READY
+/// before the final unref, which triggers "disposed in READY" criticals. Refs are held
+/// across the removal so the elements survive until we are done with them.
+void removePeerElements( GstBin *output_bin, GstElement *queue, GstElement *rtppay,
+                         GstElement *webrtcbin )
+{
+  gst_object_ref( queue );
+  gst_object_ref( rtppay );
+  gst_object_ref( webrtcbin );
+  gst_bin_remove_many( output_bin, queue, rtppay, webrtcbin, nullptr );
+  gst_element_set_state( webrtcbin, GST_STATE_NULL );
+  gst_element_set_state( rtppay, GST_STATE_NULL );
+  gst_element_set_state( queue, GST_STATE_NULL );
+  gst_object_unref( webrtcbin );
+  gst_object_unref( rtppay );
+  gst_object_unref( queue );
+}
+
+/// Log a webrtcbin transport-state transition and, if it reached its failed value, close
+/// the signaling connection so the session is torn down. Shared by the connection-state and
+/// ice-connection-state watchers so their failure handling cannot drift apart.
+void closeSignalingOnFailure( GstElement *webrtcbin, SoupWebsocketConnection *conn,
+                              const char *property, GType enum_type, gint failed_value,
+                              const char *what )
+{
+  gint state = 0;
+  g_object_get( webrtcbin, property, &state, nullptr );
+  gchar *state_name = g_enum_to_string( enum_type, state );
+  SERVER_LOG_DEBUG( "WebRTC: %s %s changed to %s", GST_ELEMENT_NAME( webrtcbin ), property,
+                    state_name );
+  g_free( state_name );
+  if ( state == failed_value ) {
+    SERVER_LOG_WARN( "WebRTC: %s %s failed, closing signaling connection",
+                     GST_ELEMENT_NAME( webrtcbin ), what );
+    SignalingServer::dispatchToContext( conn, []( SoupWebsocketConnection *c ) {
+      SignalingServer::closeIfOpen( c, SOUP_WEBSOCKET_CLOSE_NORMAL, "WebRTC transport failed" );
+    } );
+  }
+}
+
+void onConnectionStateChanged( GstElement *webrtcbin, GParamSpec *, gpointer user_data )
+{
+  auto *watch = static_cast<WebrtcCallbackContext *>( user_data );
+  closeSignalingOnFailure( webrtcbin, watch->conn, "connection-state",
+                           GST_TYPE_WEBRTC_PEER_CONNECTION_STATE,
+                           GST_WEBRTC_PEER_CONNECTION_STATE_FAILED, "connection" );
+}
+
+void onIceConnectionStateChanged( GstElement *webrtcbin, GParamSpec *, gpointer user_data )
+{
+  auto *watch = static_cast<WebrtcCallbackContext *>( user_data );
+  closeSignalingOnFailure( webrtcbin, watch->conn, "ice-connection-state",
+                           GST_TYPE_WEBRTC_ICE_CONNECTION_STATE,
+                           GST_WEBRTC_ICE_CONNECTION_STATE_FAILED, "ICE" );
+}
+
+/// Runs on the signaling context. Closes the connection if the peer transport has
+/// not established within PEER_ESTABLISH_TIMEOUT_SECONDS. This catches sessions
+/// where negotiation silently stalled (e.g. lost signaling message): without it
+/// the session lives forever with its send path blocked, reporting a connected
+/// client but transmitting nothing.
+gboolean onEstablishTimeout( gpointer user_data )
+{
+  auto *watch = static_cast<WebrtcCallbackContext *>( user_data );
+  // g_object_get writes a gint for enum properties; reading into the enum-typed variables
+  // directly would corrupt the stack under -fshort-enums. Read as gint, then narrow.
+  gint ice_state_raw = 0;
+  gint conn_state_raw = 0;
+  g_object_get( watch->webrtcbin, "ice-connection-state", &ice_state_raw, "connection-state",
+                &conn_state_raw, nullptr );
+  auto ice_state = static_cast<GstWebRTCICEConnectionState>( ice_state_raw );
+  auto conn_state = static_cast<GstWebRTCPeerConnectionState>( conn_state_raw );
+  bool established = conn_state == GST_WEBRTC_PEER_CONNECTION_STATE_CONNECTED ||
+                     ice_state == GST_WEBRTC_ICE_CONNECTION_STATE_CONNECTED ||
+                     ice_state == GST_WEBRTC_ICE_CONNECTION_STATE_COMPLETED;
+  if ( !established ) {
+    gchar *ice_name = g_enum_to_string( GST_TYPE_WEBRTC_ICE_CONNECTION_STATE, ice_state );
+    gchar *conn_name = g_enum_to_string( GST_TYPE_WEBRTC_PEER_CONNECTION_STATE, conn_state );
+    SERVER_LOG_WARN( "WebRTC: %s did not establish within %u s (ice: %s, connection: %s), closing "
+                     "signaling connection so the client can retry",
+                     GST_ELEMENT_NAME( watch->webrtcbin ), PEER_ESTABLISH_TIMEOUT_SECONDS, ice_name,
+                     conn_name );
+    g_free( ice_name );
+    g_free( conn_name );
+    SignalingServer::closeIfOpen( watch->conn, SOUP_WEBSOCKET_CLOSE_NORMAL,
+                                  "WebRTC transport not established" );
+  }
+  return G_SOURCE_REMOVE;
+}
+
+} // namespace
+
 class WebrtcOutput : public PipelineOutput
 {
 public:
@@ -55,7 +158,12 @@ public:
   ros_camera_server_msgs::msg::CameraStream
   toCameraStreamMsg( const CameraServerConfiguration &config ) const override;
 
-  int getClientCount() const override { return static_cast<int>( sessions_.size() ); }
+  // Read from the ROS thread (statistics()) while sessions_ is mutated on the signaling
+  // thread, so the count is mirrored into an atomic instead of reading sessions_.size()
+  // (a concurrent std::map read/write would be a data race).
+  int getClientCount() const override { return client_count_.load( std::memory_order_relaxed ); }
+
+  void onPipelineStopping() override;
 
   /// Called by CameraServer after pipelines are built to wire up signaling.
   void setSignalingServer( SignalingServer *server, const std::string &path );
@@ -67,6 +175,9 @@ private:
     GstElement *webrtcbin = nullptr;
     std::unique_ptr<WebRTCPeer> peer;
     GstPad *tee_src_pad = nullptr;
+    gulong connection_state_handler = 0;
+    gulong ice_state_handler = 0;
+    GSource *establish_timeout = nullptr;
   };
 
   GstElement *tee_ = nullptr;
@@ -80,6 +191,9 @@ private:
   SignalingServer *signaling_server_ = nullptr;
   std::string signaling_path_;
   std::map<SoupWebsocketConnection *, PeerSession> sessions_;
+  /// Mirrors sessions_.size() for lock-free reads from the ROS thread; only written on the
+  /// signaling thread right after sessions_ is mutated.
+  std::atomic<int> client_count_{ 0 };
 
   void onClientConnected( SoupWebsocketConnection *conn );
   void onClientMessage( SoupWebsocketConnection *conn, const nlohmann::json &msg );
@@ -151,6 +265,20 @@ void WebrtcOutput::tearDownSession( PeerSession &session )
   // Detach signaling handlers before touching webrtcbin state.
   session.peer.reset();
 
+  if ( session.establish_timeout != nullptr ) {
+    g_source_destroy( session.establish_timeout );
+    g_source_unref( session.establish_timeout );
+    session.establish_timeout = nullptr;
+  }
+  if ( session.webrtcbin != nullptr ) {
+    if ( session.connection_state_handler != 0 )
+      g_signal_handler_disconnect( session.webrtcbin, session.connection_state_handler );
+    if ( session.ice_state_handler != 0 )
+      g_signal_handler_disconnect( session.webrtcbin, session.ice_state_handler );
+  }
+  session.connection_state_handler = 0;
+  session.ice_state_handler = 0;
+
   GstBin *output_bin = GST_BIN( bin );
 
   if ( session.tee_src_pad ) {
@@ -164,15 +292,8 @@ void WebrtcOutput::tearDownSession( PeerSession &session )
     session.tee_src_pad = nullptr;
   }
 
-  if ( session.webrtcbin )
-    gst_element_set_state( session.webrtcbin, GST_STATE_NULL );
-  if ( session.rtppay )
-    gst_element_set_state( session.rtppay, GST_STATE_NULL );
-  if ( session.queue )
-    gst_element_set_state( session.queue, GST_STATE_NULL );
-
   if ( session.queue && session.rtppay && session.webrtcbin ) {
-    gst_bin_remove_many( output_bin, session.queue, session.rtppay, session.webrtcbin, nullptr );
+    removePeerElements( output_bin, session.queue, session.rtppay, session.webrtcbin );
   }
   session.queue = nullptr;
   session.rtppay = nullptr;
@@ -267,6 +388,27 @@ void WebrtcOutput::setSignalingServer( SignalingServer *server, const std::strin
       [this]( SoupWebsocketConnection *conn ) { onClientDisconnected( conn ); } );
 }
 
+void WebrtcOutput::onPipelineStopping()
+{
+  // WebRTC transports (DTLS/ICE) do not survive the pipeline's NULL state change.
+  // Close the signaling connections so clients reconnect and renegotiate instead of
+  // watching a frozen stream. Dispatched to the signaling context: libsoup is not
+  // thread-safe and sessions_ must only be touched from there.
+  GMainContext *context = SignalingServer::mainContext();
+  if ( context == nullptr )
+    return;
+  g_main_context_invoke_full(
+      context, G_PRIORITY_DEFAULT,
+      []( gpointer data ) -> gboolean {
+        auto *self = static_cast<WebrtcOutput *>( data );
+        for ( const auto &[conn, session] : self->sessions_ ) {
+          SignalingServer::closeIfOpen( conn, SOUP_WEBSOCKET_CLOSE_GOING_AWAY, "Pipeline restarting" );
+        }
+        return G_SOURCE_REMOVE;
+      },
+      this, nullptr );
+}
+
 void WebrtcOutput::onClientConnected( SoupWebsocketConnection *conn )
 {
   SERVER_LOG_INFO( "WebRTC: new client connected on %s", signaling_path_.c_str() );
@@ -295,17 +437,16 @@ void WebrtcOutput::addPeerBranch( SoupWebsocketConnection *conn )
 
   // Create per-peer elements
   GstElement *queue = gst_element_factory_make( "queue", ( peer_name + "_queue" ).c_str() );
-  g_object_set( G_OBJECT( queue ), "max-size-time", (guint64)10'000'000 /* 100ms */,
+  g_object_set( G_OBJECT( queue ), "max-size-time", (guint64)40'000'000 /* 40ms */,
                 "max-size-buffers", 5, "max-size-bytes", 0, "leaky", 2 /* downstream */, nullptr );
 
   const char *pay_factory = rtpPayloaderForCodec( codec_ );
   GstElement *rtppay = gst_element_factory_make( pay_factory, ( peer_name + "_rtppay" ).c_str() );
-  if ( codec_ == "h264" ) {
+  // rtph264pay and rtph265pay share these properties; guard by codec so a future
+  // payloader (e.g. vp8) does not get H.26x-specific properties set on it.
+  if ( codec_ == "h264" || codec_ == "h265" ) {
     g_object_set( G_OBJECT( rtppay ), "timestamp-offset", 0, "mtu", 1300, "aggregate-mode",
                   0 /* zero-latency */, "config-interval", -1, nullptr );
-  } else if ( codec_ == "h265" ) {
-    g_object_set( G_OBJECT( rtppay ), "timestamp-offset", 0, "mtu", 1300, "aggregate-mode",
-                  0 /* zero-latency */, nullptr );
   }
 
   GstElement *webrtcbin =
@@ -320,7 +461,30 @@ void WebrtcOutput::addPeerBranch( SoupWebsocketConnection *conn )
       gst_object_unref( rtppay );
     if ( webrtcbin )
       gst_object_unref( webrtcbin );
+    // No session is stored, so nothing else will ever close this connection: close it now so
+    // the client stops waiting for an offer and reconnects instead of lingering forever.
+    SignalingServer::closeIfOpen( conn, SOUP_WEBSOCKET_CLOSE_NORMAL, "WebRTC setup failed" );
     return;
+  }
+
+  // libnice's ICE agent runs UPnP-IGD discovery by default, sending SSDP M-SEARCH
+  // packets to 239.255.255.250 to find a router for automatic port mapping. We rely
+  // solely on STUN/signaling for connectivity, not router port mapping, so disable UPnP.
+  {
+    GObject *ice = nullptr;
+    g_object_get( webrtcbin, "ice-agent", &ice, nullptr );
+    if ( ice != nullptr ) {
+      GObject *nice_agent = nullptr;
+      g_object_get( ice, "agent", &nice_agent, nullptr );
+      if ( nice_agent != nullptr ) {
+        // The property only exists when libnice was built with GUPnP
+        if ( g_object_class_find_property( G_OBJECT_GET_CLASS( nice_agent ), "upnp" ) != nullptr ) {
+          g_object_set( nice_agent, "upnp", FALSE, nullptr );
+        }
+        g_object_unref( nice_agent );
+      }
+      g_object_unref( ice );
+    }
   }
 
   // Create the WebRTC peer BEFORE linking to webrtcbin, so the on-negotiation-needed
@@ -332,28 +496,23 @@ void WebrtcOutput::addPeerBranch( SoupWebsocketConnection *conn )
   gst_bin_add_many( output_bin, queue, rtppay, webrtcbin, nullptr );
   gst_element_link( queue, rtppay );
 
-  // Request a new src pad from the tee and link to the queue
-  GstPad *tee_src_pad = gst_element_request_pad_simple( tee_, "src_%u" );
-  GstPad *queue_sink_pad = gst_element_get_static_pad( queue, "sink" );
-  GstPadLinkReturn link_ret = gst_pad_link( tee_src_pad, queue_sink_pad );
-  gst_object_unref( queue_sink_pad );
-
-  if ( link_ret != GST_PAD_LINK_OK ) {
-    SERVER_LOG_ERROR( "WebRTC: failed to link tee to queue (error: %d)", link_ret );
-    gst_element_release_request_pad( tee_, tee_src_pad );
-    gst_object_unref( tee_src_pad );
+  // Tears the half-built peer branch back down. Used by every failure path below so a future
+  // per-peer element is unwound in one place, not several. The tee pad is passed in because
+  // the tee is only linked at the very end; earlier failure paths have no pad to release.
+  auto cleanup_partial_branch = [&]( GstPad *tee_src_pad ) {
+    if ( tee_src_pad != nullptr ) {
+      gst_element_release_request_pad( tee_, tee_src_pad );
+      gst_object_unref( tee_src_pad );
+    }
     peer.reset();
-    gst_element_set_state( webrtcbin, GST_STATE_NULL );
-    gst_element_set_state( rtppay, GST_STATE_NULL );
-    gst_element_set_state( queue, GST_STATE_NULL );
-    gst_bin_remove_many( output_bin, queue, rtppay, webrtcbin, nullptr );
-    return;
-  }
+    removePeerElements( output_bin, queue, rtppay, webrtcbin );
+    // No session is stored on these paths, so close the connection here; otherwise the client
+    // never gets an offer and the socket stays open forever with no one left to close it.
+    SignalingServer::closeIfOpen( conn, SOUP_WEBSOCKET_CLOSE_NORMAL, "WebRTC setup failed" );
+  };
 
-  // Sync states BEFORE linking to webrtcbin so that on-negotiation-needed fires
-  // (webrtcbin only emits the signal when in PLAYING state)
-  gst_element_sync_state_with_parent( queue );
-  gst_element_sync_state_with_parent( rtppay );
+  // Sync webrtcbin BEFORE linking rtppay to it: it defers on-negotiation-needed while
+  // still in NULL, so it must have left NULL for the link to trigger it.
   gst_element_sync_state_with_parent( webrtcbin );
 
   // Fixate the RTP caps before handing them to webrtcbin: rtph264pay/rtph265pay advertise
@@ -367,13 +526,7 @@ void WebrtcOutput::addPeerBranch( SoupWebsocketConnection *conn )
   gst_caps_unref( rtp_caps );
   if ( !linked ) {
     SERVER_LOG_ERROR( "WebRTC: failed to link rtppay to webrtcbin" );
-    gst_element_release_request_pad( tee_, tee_src_pad );
-    gst_object_unref( tee_src_pad );
-    peer.reset();
-    gst_element_set_state( webrtcbin, GST_STATE_NULL );
-    gst_element_set_state( rtppay, GST_STATE_NULL );
-    gst_element_set_state( queue, GST_STATE_NULL );
-    gst_bin_remove_many( output_bin, queue, rtppay, webrtcbin, nullptr );
+    cleanup_partial_branch( nullptr );
     return;
   }
 
@@ -418,6 +571,31 @@ void WebrtcOutput::addPeerBranch( SoupWebsocketConnection *conn )
       this, nullptr );
   gst_object_unref( rtppay_src_pad );
 
+  // Activate the remaining branch elements, then link the tee LAST, when the whole branch
+  // is linked and active. Linking the tee earlier opens a window where it pushes a buffer
+  // into a still-inactive pad; the resulting GST_FLOW_FLUSHING is fatal for the tee
+  // (allow-not-linked only forgives NOT_LINKED), latches into every queue upstream and
+  // silently pauses the feeding streaming thread - the entire output freezes at 0 fps
+  // without any bus error, for every current and future session.
+  gst_element_sync_state_with_parent( rtppay );
+  gst_element_sync_state_with_parent( queue );
+
+  GstPad *tee_src_pad = gst_element_request_pad_simple( tee_, "src_%u" );
+  GstPad *queue_sink_pad = gst_element_get_static_pad( queue, "sink" );
+  GstPadLinkReturn link_ret = gst_pad_link( tee_src_pad, queue_sink_pad );
+  gst_object_unref( queue_sink_pad );
+  if ( link_ret != GST_PAD_LINK_OK ) {
+    SERVER_LOG_ERROR( "WebRTC: failed to link tee to queue (error: %d)", link_ret );
+    cleanup_partial_branch( tee_src_pad );
+    return;
+  }
+
+  // Request an immediate keyframe so the new client can start decoding right away
+  // instead of waiting for the next periodic IDR. Sources that cannot comply
+  // (e.g. cameras delivering pre-encoded H.264) ignore the event.
+  gst_pad_send_event( tee_src_pad,
+                      gst_video_event_new_upstream_force_key_unit( GST_CLOCK_TIME_NONE, TRUE, 0 ) );
+
   // Store session
   PeerSession session;
   session.queue = queue;
@@ -425,7 +603,30 @@ void WebrtcOutput::addPeerBranch( SoupWebsocketConnection *conn )
   session.webrtcbin = webrtcbin;
   session.peer = std::move( peer );
   session.tee_src_pad = tee_src_pad;
+
+  // Monitor transport state: log transitions, close the signaling connection on
+  // failure or when the transport never establishes, so the session is torn down
+  // instead of staying blocked forever while reporting a connected client.
+  session.connection_state_handler = g_signal_connect_data(
+      webrtcbin, "notify::connection-state", G_CALLBACK( onConnectionStateChanged ),
+      WebrtcCallbackContext::create( webrtcbin, conn ), WebrtcCallbackContext::destroyClosure,
+      static_cast<GConnectFlags>( 0 ) );
+  session.ice_state_handler = g_signal_connect_data(
+      webrtcbin, "notify::ice-connection-state", G_CALLBACK( onIceConnectionStateChanged ),
+      WebrtcCallbackContext::create( webrtcbin, conn ), WebrtcCallbackContext::destroyClosure,
+      static_cast<GConnectFlags>( 0 ) );
+
+  if ( SignalingServer::mainContext() != nullptr ) {
+    GSource *timeout = g_timeout_source_new_seconds( PEER_ESTABLISH_TIMEOUT_SECONDS );
+    g_source_set_callback( timeout, onEstablishTimeout,
+                           WebrtcCallbackContext::create( webrtcbin, conn ),
+                           WebrtcCallbackContext::destroy );
+    g_source_attach( timeout, SignalingServer::mainContext() );
+    session.establish_timeout = timeout;
+  }
+
   sessions_[conn] = std::move( session );
+  client_count_.store( static_cast<int>( sessions_.size() ), std::memory_order_relaxed );
 }
 
 void WebrtcOutput::removePeerBranch( SoupWebsocketConnection *conn )
@@ -436,6 +637,7 @@ void WebrtcOutput::removePeerBranch( SoupWebsocketConnection *conn )
 
   tearDownSession( it->second );
   sessions_.erase( it );
+  client_count_.store( static_cast<int>( sessions_.size() ), std::memory_order_relaxed );
   SERVER_LOG_INFO( "WebRTC: removed peer branch from %s (%zu clients remaining)",
                    signaling_path_.c_str(), sessions_.size() );
 }

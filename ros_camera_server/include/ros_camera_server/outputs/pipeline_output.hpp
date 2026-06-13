@@ -55,6 +55,11 @@ public:
   /// Get the number of connected clients (-1 if not supported, 0 if no clients, >0 for client count)
   virtual int getClientCount() const { return -1; }
 
+  /// Called before the pipeline is stopped or restarted (elements set to NULL).
+  /// Outputs whose client transports do not survive a NULL state change should
+  /// disconnect their clients here so they can reconnect cleanly.
+  virtual void onPipelineStopping() { }
+
   GstBin *bin = nullptr;
 
   // Encoder name for this output path (e.g., "nvh264enc", "x264enc")

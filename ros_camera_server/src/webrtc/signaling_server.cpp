@@ -24,6 +24,8 @@
 namespace ros_camera_server
 {
 
+GMainContext *SignalingServer::context_ = nullptr;
+
 SignalingServer::SignalingServer( int port ) : port_( port ) { }
 
 SignalingServer::~SignalingServer() { stop(); }
@@ -34,6 +36,12 @@ bool SignalingServer::start()
     return true;
 
   server_ = soup_server_new( nullptr, nullptr );
+
+  // The soup server attaches to the thread-default context of the calling thread.
+  // Remember it so sendMessage can dispatch sends from other threads onto it.
+  if ( context_ != nullptr )
+    g_main_context_unref( context_ );
+  context_ = g_main_context_ref_thread_default();
 
   // Serve test page at root
   soup_server_add_handler( server_, "/", onHttpRequest, this, nullptr );
@@ -49,6 +57,10 @@ bool SignalingServer::start()
     g_error_free( error );
     g_object_unref( server_ );
     server_ = nullptr;
+    // Release the context ref taken above; otherwise it leaks and mainContext() keeps
+    // reporting a live context for a server that never started.
+    g_main_context_unref( context_ );
+    context_ = nullptr;
     return false;
   }
   if ( port_ == 0 ) {
@@ -73,9 +85,7 @@ void SignalingServer::stop()
     return;
 
   for ( auto *conn : connections_ ) {
-    if ( soup_websocket_connection_get_state( conn ) == SOUP_WEBSOCKET_STATE_OPEN ) {
-      soup_websocket_connection_close( conn, SOUP_WEBSOCKET_CLOSE_GOING_AWAY, "Server shutting down" );
-    }
+    closeIfOpen( conn, SOUP_WEBSOCKET_CLOSE_GOING_AWAY, "Server shutting down" );
     g_object_unref( conn );
   }
   connections_.clear();
@@ -83,6 +93,12 @@ void SignalingServer::stop()
   soup_server_disconnect( server_ );
   g_object_unref( server_ );
   server_ = nullptr;
+
+  // Release the context ref taken in start() and clear it
+  if ( context_ != nullptr ) {
+    g_main_context_unref( context_ );
+    context_ = nullptr;
+  }
   SERVER_LOG_INFO( "WebRTC signaling server stopped" );
 }
 
@@ -97,10 +113,61 @@ void SignalingServer::registerEndpoint( const std::string &path, const CameraInf
 
 void SignalingServer::sendMessage( SoupWebsocketConnection *conn, const nlohmann::json &msg )
 {
-  if ( !conn || soup_websocket_connection_get_state( conn ) != SOUP_WEBSOCKET_STATE_OPEN )
+  if ( !conn )
     return;
-  std::string text = msg.dump();
-  soup_websocket_connection_send_text( conn, text.c_str() );
+
+  // Fast path: already on the server's context (or no context known, e.g. tests
+  // driving everything from one thread).
+  if ( context_ == nullptr || g_main_context_is_owner( context_ ) ) {
+    if ( soup_websocket_connection_get_state( conn ) == SOUP_WEBSOCKET_STATE_OPEN ) {
+      soup_websocket_connection_send_text( conn, msg.dump().c_str() );
+    }
+    return;
+  }
+
+  // libsoup is not thread-safe: dispatch the send to the server's context.
+  // Same-priority invokes are processed in order, so SDP/ICE message order is preserved.
+  dispatchToContext( conn, [text = msg.dump()]( SoupWebsocketConnection *c ) {
+    if ( soup_websocket_connection_get_state( c ) == SOUP_WEBSOCKET_STATE_OPEN ) {
+      soup_websocket_connection_send_text( c, text.c_str() );
+    }
+  } );
+}
+
+void SignalingServer::dispatchToContext( SoupWebsocketConnection *conn,
+                                         std::function<void( SoupWebsocketConnection * )> action )
+{
+  if ( conn == nullptr || context_ == nullptr )
+    return;
+
+  struct Dispatch {
+    SoupWebsocketConnection *conn;
+    std::function<void( SoupWebsocketConnection * )> action;
+  };
+  auto *dispatch = new Dispatch{ conn, std::move( action ) };
+  g_object_ref( conn );
+  g_main_context_invoke_full(
+      context_, G_PRIORITY_DEFAULT,
+      []( gpointer data ) -> gboolean {
+        auto *d = static_cast<Dispatch *>( data );
+        d->action( d->conn );
+        return G_SOURCE_REMOVE;
+      },
+      dispatch,
+      []( gpointer data ) {
+        auto *d = static_cast<Dispatch *>( data );
+        g_object_unref( d->conn );
+        delete d;
+      } );
+}
+
+void SignalingServer::closeIfOpen( SoupWebsocketConnection *conn, unsigned short code,
+                                   const char *reason )
+{
+  if ( conn == nullptr )
+    return;
+  if ( soup_websocket_connection_get_state( conn ) == SOUP_WEBSOCKET_STATE_OPEN )
+    soup_websocket_connection_close( conn, code, reason );
 }
 
 void SignalingServer::onHttpRequest( SoupServer *, SoupServerMessage *msg, const char *path,

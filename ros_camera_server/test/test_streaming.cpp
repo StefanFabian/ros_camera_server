@@ -825,6 +825,23 @@ TEST_F( StreamingTest, FullWebRTCPipeline )
   ASSERT_NE( client_webrtc, nullptr );
   ASSERT_NE( client_sink, nullptr );
 
+  // Disable UPnP-IGD on the client's nice agent like the server does for its peers: on a
+  // network with an IGD, agent teardown deadlocks against the GUPnP-IGD worker thread.
+  {
+    GObject *ice = nullptr;
+    g_object_get( client_webrtc, "ice-agent", &ice, nullptr );
+    ASSERT_NE( ice, nullptr );
+    GObject *nice_agent = nullptr;
+    g_object_get( ice, "agent", &nice_agent, nullptr );
+    if ( nice_agent != nullptr ) {
+      if ( g_object_class_find_property( G_OBJECT_GET_CLASS( nice_agent ), "upnp" ) != nullptr ) {
+        g_object_set( nice_agent, "upnp", FALSE, nullptr );
+      }
+      g_object_unref( nice_agent );
+    }
+    g_object_unref( ice );
+  }
+
   g_signal_connect( client_sink, "handoff", G_CALLBACK( handoff_callback ), &context );
   gst_element_set_state( client_pipeline, GST_STATE_PLAYING );
 

@@ -20,6 +20,7 @@
 #include <ros_camera_server/configuration.hpp>
 #include <ros_camera_server/inputs/ros2_input.hpp>
 #include <ros_camera_server/inputs/rtp_input.hpp>
+#include <ros_camera_server/inputs/videotestsrc_input.hpp>
 #include <ros_camera_server/outputs/ros2_output.hpp>
 #include <ros_camera_server/outputs/rtp_output.hpp>
 #include <yaml-cpp/yaml.h>
@@ -221,6 +222,74 @@ codec: png
 port: 5004
 )" );
   EXPECT_THROW( ros_camera_server::RtpInputConfiguration::from_yaml_shared( bad ),
+                ros_camera_server::ConfigurationLoadError );
+}
+
+TEST( VideoTestSrcInputConfigurationTest, ParsesAllFields )
+{
+  auto config = YAML::Load( R"(
+type: videotestsrc
+pattern: ball
+format: GRAY8
+width: 1280
+height: 720
+framerate: 15/1
+)" );
+
+  auto input = ros_camera_server::VideoTestSrcInputConfiguration::from_yaml_shared( config );
+  ASSERT_NE( input, nullptr );
+  EXPECT_EQ( input->type, "videotestsrc" );
+  EXPECT_EQ( input->pattern, "ball" );
+  EXPECT_EQ( input->format, "GRAY8" );
+  EXPECT_EQ( input->width, 1280 );
+  EXPECT_EQ( input->height, 720 );
+  EXPECT_EQ( input->framerate, ros_camera_server::Framerate( 15, 1 ) );
+}
+
+TEST( VideoTestSrcInputConfigurationTest, Defaults )
+{
+  auto config = YAML::Load( R"(
+type: videotestsrc
+)" );
+
+  auto input = ros_camera_server::VideoTestSrcInputConfiguration::from_yaml_shared( config );
+  ASSERT_NE( input, nullptr );
+  EXPECT_EQ( input->pattern, "smpte" );
+  EXPECT_TRUE( input->format.empty() );
+  EXPECT_EQ( input->width, 640 );
+  EXPECT_EQ( input->height, 480 );
+  EXPECT_FALSE( input->framerate.isValid() );
+}
+
+// An unknown format must fail loading instead of producing an empty StreamInput in
+// createInput, which the rebuild loop would retry forever as a transient fault.
+TEST( VideoTestSrcInputConfigurationTest, RejectsUnknownFormat )
+{
+  auto config = YAML::Load( R"(
+type: videotestsrc
+format: not_a_format
+)" );
+
+  EXPECT_THROW( ros_camera_server::VideoTestSrcInputConfiguration::from_yaml_shared( config ),
+                ros_camera_server::ConfigurationLoadError );
+}
+
+// Non-positive dimensions produce unsatisfiable caps that never negotiate
+// (0 fps restart loop); they must fail loading like an unknown format does.
+TEST( VideoTestSrcInputConfigurationTest, RejectsNonPositiveDimensions )
+{
+  auto zero_width = YAML::Load( R"(
+type: videotestsrc
+width: 0
+)" );
+  EXPECT_THROW( ros_camera_server::VideoTestSrcInputConfiguration::from_yaml_shared( zero_width ),
+                ros_camera_server::ConfigurationLoadError );
+
+  auto negative_height = YAML::Load( R"(
+type: videotestsrc
+height: -480
+)" );
+  EXPECT_THROW( ros_camera_server::VideoTestSrcInputConfiguration::from_yaml_shared( negative_height ),
                 ros_camera_server::ConfigurationLoadError );
 }
 
