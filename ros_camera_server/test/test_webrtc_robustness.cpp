@@ -17,9 +17,11 @@
 
 /// Robustness tests for the WebRTC output: clients that vanish without a close frame,
 /// stall negotiation, disconnect mid-negotiation, reconnect in tight loops, and pipeline
-/// restarts / server shutdown racing live sessions. Each scenario ends by asserting the
-/// server still serves a fresh streaming client, so a wedged signaling thread or a dead
-/// send path fails the test instead of going unnoticed.
+/// restarts / server shutdown racing live sessions. The hammer scenarios push further:
+/// many clients connecting and streaming concurrently, a flood of malformed / out-of-protocol
+/// signaling, and a sustained mixed-mode churn with the pipeline restarting underneath it.
+/// Each scenario ends by asserting the server still serves a fresh streaming client, so a
+/// wedged signaling thread or a dead send path fails the test instead of going unnoticed.
 
 #include "camera_pipeline.hpp"
 #include "ros_camera_server/camera_server.hpp"
@@ -33,8 +35,11 @@
 #include <ros_camera_server/outputs/webrtc_output.hpp>
 
 #include <chrono>
+#include <deque>
+#include <memory>
 #include <optional>
 #include <thread>
+#include <vector>
 
 using namespace ros_camera_server;
 using namespace ros_camera_server_test;
@@ -319,6 +324,122 @@ TEST_F( WebRtcRobustnessTest, ServerShutdownWithLiveClientsAndReconnect )
   // Restart the server (new port: the OS assigns a fresh one) and reconnect.
   startServer();
   expectFreshClientStreams( "after server restart" );
+}
+
+// Many clients connect, stream and leave at the same time. Stresses concurrent tee
+// request-pad creation/release, the session map and per-branch state changes far beyond the
+// one-or-two-client path the other tests exercise. Run twice so the second wave reuses pads
+// and bin slots freed by the first.
+TEST_F( WebRtcRobustnessTest, ConcurrentClientStorm )
+{
+  constexpr int kClients = 12;
+  for ( int round = 0; round < 2; ++round ) {
+    std::vector<std::unique_ptr<WebRtcTestClient>> clients;
+    clients.reserve( kClients );
+    for ( int i = 0; i < kClients; ++i )
+      clients.push_back( std::make_unique<WebRtcTestClient>( port_, "/robust_cam/0" ) );
+    for ( int i = 0; i < kClients; ++i )
+      EXPECT_TRUE( clients[i]->waitConnected( 10s ) ) << "round " << round << " client " << i;
+    // Every client must actually receive media concurrently, not just connect.
+    for ( int i = 0; i < kClients; ++i )
+      EXPECT_TRUE( clients[i]->waitBuffers( 5, 20s ) )
+          << "round " << round << " client " << i << " got " << clients[i]->bufferCount()
+          << " buffers";
+    // Tear them all down at once, half abrupt (no close frame) and half clean (destructor).
+    for ( int i = 0; i < kClients; ++i )
+      if ( i % 2 == 0 )
+        clients[i]->disconnectAbrupt();
+    clients.clear();
+  }
+  expectFreshClientStreams( "after concurrent client storm" );
+}
+
+// A hostile or buggy client floods the signaling channel with malformed and out-of-protocol
+// messages: non-JSON, valid JSON that is not a signaling object, garbage SDP, an offer sent to
+// the offerer (glare), ICE for a nonexistent m-line, and an ICE candidate flood. None of it may
+// crash the process, wedge the signaling thread or corrupt the session map. A fresh client must
+// still stream afterwards. The injector uses MUTE mode so it never answers; we drive the bytes by
+// hand.
+TEST_F( WebRtcRobustnessTest, MalformedSignalingDoesNotBreakServer )
+{
+  WebRtcTestClient junk( port_, "/robust_cam/0", WebRtcTestClient::Mode::MUTE );
+  ASSERT_TRUE( junk.waitConnected( 5s ) );
+
+  // Not JSON at all (exercises the parse try/catch).
+  junk.sendText( "this is not json" );
+  junk.sendText( "" );
+  junk.sendText( "{ broken json" );
+  // Valid JSON, but not a signaling object.
+  junk.sendText( "[1,2,3]" );
+  junk.sendText( "12345" );
+  junk.sendText( "null" );
+  junk.sendText( R"({"random":"field"})" );
+  // Well-formed signaling shape, broken content.
+  junk.sendText( R"({"type":"answer","sdp":"not a real sdp"})" );
+  junk.sendText( R"({"type":"offer","sdp":"v=0\r\n"})" ); // offer to an offerer (glare)
+  junk.sendText( R"({"type":"bogus","sdp":"x"})" );       // unknown SDP type
+  junk.sendText( R"({"sdp":"missing type"})" );           // sdp without type
+  junk.sendText( R"({"type":"answer"})" );                // type without sdp
+  // Malformed / out-of-range ICE.
+  junk.sendText( R"({"ice":{"candidate":"total garbage","sdpMLineIndex":0}})" );
+  junk.sendText(
+      R"({"ice":{"candidate":"candidate:1 1 UDP 1 1.2.3.4 1 typ host","sdpMLineIndex":99}})" );
+  junk.sendText( R"({"ice":{}})" );
+  // ICE candidate flood on a session that never negotiated.
+  for ( int i = 0; i < 200; ++i )
+    junk.sendText(
+        R"({"ice":{"candidate":"candidate:1 1 UDP 1 1.2.3.4 1 typ host","sdpMLineIndex":0}})" );
+
+  expectFreshClientStreams( "after malformed signaling barrage" );
+}
+
+// Sustained mixed-load hammer: a rolling window of clients in every failure mode (full streamers,
+// mutes that never answer, mid-negotiation closers, abrupt deaths) churns continuously while the
+// pipeline is periodically restarted underneath them. Deterministic by design — every behavior is
+// selected from the iteration index, never from RNG, so a failure reproduces exactly. The final
+// health check fails if anything wedged the signaling thread or killed the send path.
+TEST_F( WebRtcRobustnessTest, ChaosHammer )
+{
+  std::deque<std::unique_ptr<WebRtcTestClient>> live;
+  const auto deadline = std::chrono::steady_clock::now() + 20s;
+  int i = 0;
+  while ( std::chrono::steady_clock::now() < deadline ) {
+    WebRtcTestClient::Mode mode;
+    switch ( i % 4 ) {
+    case 1:
+      mode = WebRtcTestClient::Mode::MUTE;
+      break;
+    case 2:
+      mode = WebRtcTestClient::Mode::CLOSE_AFTER_OFFER;
+      break;
+    default:
+      mode = WebRtcTestClient::Mode::FULL;
+      break;
+    }
+    auto client = std::make_unique<WebRtcTestClient>( port_, "/robust_cam/0", mode );
+    if ( client->waitConnected( 5s ) && mode == WebRtcTestClient::Mode::FULL ) {
+      client->waitBuffers( 2, 3s );
+      if ( i % 3 == 0 )
+        client->disconnectAbrupt();
+    }
+    live.push_back( std::move( client ) );
+    // Bounded rolling window of concurrent live sessions.
+    if ( live.size() > 6 )
+      live.pop_front();
+    // Periodically restart the pipeline while the churn is in flight.
+    if ( i % 7 == 6 )
+      restartPipelineOnGstThread();
+    ++i;
+  }
+  live.clear();
+  ASSERT_TRUE( waitForCondition( 15s,
+                                 [this]() {
+                                   const auto &pipeline = server_->pipelines().front();
+                                   return pipeline->getState() == GST_STATE_PLAYING &&
+                                          pipeline->statistics().input_fps > 0.0f;
+                                 } ) )
+      << "pipeline did not settle after chaos hammer";
+  expectFreshClientStreams( "after chaos hammer" );
 }
 
 int main( int argc, char **argv )

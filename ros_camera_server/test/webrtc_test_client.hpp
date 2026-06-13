@@ -155,6 +155,19 @@ public:
     } );
   }
 
+  /// Send an arbitrary raw text frame. Used to inject malformed / out-of-protocol
+  /// signaling (non-JSON, wrong message types, garbage SDP/ICE) to fuzz the server.
+  /// No-op if the connection is not currently open.
+  void sendText( const std::string &text )
+  {
+    invoke( [this, text]() {
+      if ( conn_ != nullptr &&
+           soup_websocket_connection_get_state( conn_ ) == SOUP_WEBSOCKET_STATE_OPEN ) {
+        soup_websocket_connection_send_text( conn_, text.c_str() );
+      }
+    } );
+  }
+
   /// Kill the underlying TCP stream without sending a websocket close frame.
   /// The server sees the connection drop like a crashed client process.
   void disconnectAbrupt()
@@ -244,15 +257,7 @@ private:
     g_object_unref( msg );
   }
 
-  void sendJson( const nlohmann::json &msg )
-  {
-    invoke( [this, text = msg.dump()]() {
-      if ( conn_ != nullptr &&
-           soup_websocket_connection_get_state( conn_ ) == SOUP_WEBSOCKET_STATE_OPEN ) {
-        soup_websocket_connection_send_text( conn_, text.c_str() );
-      }
-    } );
-  }
+  void sendJson( const nlohmann::json &msg ) { sendText( msg.dump() ); }
 
   static void onHandoff( GstElement *, GstBuffer *, GstPad *, gpointer user_data )
   {
