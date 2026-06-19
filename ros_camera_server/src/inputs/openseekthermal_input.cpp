@@ -65,8 +65,7 @@ OpenSeekThermalInputConfiguration::from_yaml_shared( const YAML::Node &config )
   result->skip_invalid_frames = config["skip_invalid_frames"].as<bool>( true );
   result->normalize = config["normalize"].as<bool>( false );
   result->normalize_frame_count = config["normalize_frame_count"].as<unsigned int>( 8 );
-  result->dead_pixel_mask = config["dead_pixel_mask"].as<std::string>( "" );
-  result->vignette_correction = config["vignette_correction"].as<std::string>( "" );
+  result->calibration = config["calibration"].as<std::string>( "" );
   return result;
 }
 
@@ -75,14 +74,12 @@ StreamInput OpenSeekThermalInputConfiguration::createInput( const rclcpp::Node::
 {
   auto *input_bin = GST_BIN( gst_bin_new( "input_bin" ) );
   GstElement *src = gst_element_factory_make( "openseekthermalsrc", "input" );
-  const std::string dead_pixel_mask_path = resolvePackageUri( dead_pixel_mask );
-  const std::string vignette_correction_path = resolvePackageUri( vignette_correction );
+  const std::string calibration_path = resolvePackageUri( calibration );
   g_object_set( G_OBJECT( src ), "serial", serial.c_str(), "port", port.c_str(),
                 "skip-invalid-frames", skip_invalid_frames ? TRUE : FALSE, "normalize",
                 normalize ? TRUE : FALSE, "normalize-frame-count",
-                static_cast<guint>( normalize_frame_count ), "dead-pixel-mask",
-                dead_pixel_mask_path.c_str(), "vignette-correction",
-                vignette_correction_path.c_str(), "do-timestamp", TRUE, nullptr );
+                static_cast<guint>( normalize_frame_count ), "calibration",
+                calibration_path.c_str(), "do-timestamp", TRUE, nullptr );
 
   gst_bin_add( input_bin, src );
   GstPad *input_pad = gst_element_get_static_pad( src, "src" );

@@ -121,8 +121,7 @@ input:
   normalize: false
   # Optional: number of frames to use for normalization (default: 8)
   normalize_frame_count: 8
-  # Optional: calibration files
+  # Optional: path to a calibration file
   # Accepts absolute paths, file:///abs/path, or package://<pkg>/<relative_path>.
-  dead_pixel_mask: ""
-  vignette_correction: ""
+  calibration: ""
 ```

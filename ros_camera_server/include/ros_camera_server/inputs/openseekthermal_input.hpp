@@ -36,10 +36,9 @@ public:
   bool normalize = false;
   //! Number of frames used for normalization.
   unsigned int normalize_frame_count = 8;
-  //! Optional path to an 8-bit P5 PGM mask of dead pixels.
-  std::string dead_pixel_mask;
-  //! Optional path to a radial polynomial vignette fit.
-  std::string vignette_correction;
+  //! Optional path to a calibration .ini file.
+  //! Empty = use the on-camera factory calibration.
+  std::string calibration;
   [[nodiscard]] StreamInput createInput( const rclcpp::Node::SharedPtr &,
                                          const std::string &camera_id ) const override;
   static std::shared_ptr<OpenSeekThermalInputConfiguration>
