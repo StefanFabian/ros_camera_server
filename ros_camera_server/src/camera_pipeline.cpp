@@ -21,6 +21,7 @@
 #include "pipeline/pipeline_graph.hpp"
 #include "pipeline_monitor.hpp"
 #include "ros_camera_server/exceptions.hpp"
+#include "ros_camera_server/helpers/fps_window.hpp"
 #include "ros_camera_server/helpers/reference_timestamp_helpers.hpp"
 
 #include <chrono>
@@ -384,15 +385,7 @@ PipelineStatistics CameraPipeline::statistics() const
   auto now = clock::now();
   {
     std::lock_guard lock( input_timestamps_mutex_ );
-    auto dt = duration_cast<milliseconds>( now - input_buffer_timestamps_.front() ).count();
-    while ( !input_buffer_timestamps_.empty() &&
-            duration_cast<milliseconds>( now - input_buffer_timestamps_.front() ).count() > 3000 ) {
-      input_buffer_timestamps_.pop_front();
-    }
-    if ( input_buffer_timestamps_.empty() )
-      stats.input_fps = 0.0;
-    else
-      stats.input_fps = input_buffer_timestamps_.size() / ( dt / 1000.0f );
+    stats.input_fps = pruneAndComputeFps( input_buffer_timestamps_, now );
   }
   for ( const auto &output : outputs_ ) {
     stats.output_statistics.push_back( output->statistics() );

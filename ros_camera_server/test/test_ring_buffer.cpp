@@ -16,6 +16,7 @@
  */
 
 #include <gtest/gtest.h>
+#include <ros_camera_server/helpers/fps_window.hpp>
 #include <ros_camera_server/helpers/ring_buffer.hpp>
 
 TEST( RingBufferTest, TestPushAndSize )
@@ -109,6 +110,76 @@ TEST( RingBufferTest, TestClear )
   buffer.push( 3 );
   EXPECT_EQ( buffer.size(), 1 );
   EXPECT_EQ( buffer.front(), 3 );
+}
+
+namespace
+{
+using time_point = std::chrono::steady_clock::time_point;
+using namespace std::chrono_literals;
+
+//! Fill the buffer with timestamps at a fixed interval, ending one interval before now.
+template<size_t Size>
+void fillAtInterval( RingBuffer<time_point, Size> &buffer, time_point now,
+                     std::chrono::milliseconds interval, size_t count )
+{
+  for ( size_t i = count; i > 0; --i ) { buffer.push( now - i * interval ); }
+}
+} // namespace
+
+TEST( FpsWindowTest, EmptyBufferReturnsZero )
+{
+  RingBuffer<time_point, 30> buffer;
+  EXPECT_EQ( ros_camera_server::pruneAndComputeFps( buffer, time_point( 10000s ) ), 0.0f );
+}
+
+TEST( FpsWindowTest, SteadyRateFullBuffer )
+{
+  // 25 fps: 30 timestamps spanning 1.2s, all inside the 3s window.
+  RingBuffer<time_point, 30> buffer;
+  const time_point now( 10000s );
+  fillAtInterval( buffer, now, 40ms, 30 );
+  EXPECT_NEAR( ros_camera_server::pruneAndComputeFps( buffer, now, 3s ), 25.0f, 0.1f );
+  EXPECT_EQ( buffer.size(), 30u );
+}
+
+TEST( FpsWindowTest, LowRatePrunesBeforeComputingDt )
+{
+  // 5 fps: a full 30-slot buffer spans 6s, so half the timestamps are outside the 3s window.
+  // dt must come from the oldest timestamp remaining after pruning, not from before.
+  RingBuffer<time_point, 30> buffer;
+  const time_point now( 10000s );
+  fillAtInterval( buffer, now, 200ms, 30 );
+  EXPECT_NEAR( ros_camera_server::pruneAndComputeFps( buffer, now, 3s ), 5.0f, 0.4f );
+  EXPECT_LT( buffer.size(), 30u );
+}
+
+TEST( FpsWindowTest, MinTimestamps )
+{
+  RingBuffer<time_point, 30> buffer;
+  const time_point now( 10000s );
+  const auto interval_ms = 40ms;
+  fillAtInterval( buffer, now, interval_ms, 30 );
+  EXPECT_EQ( ros_camera_server::pruneAndComputeFps( buffer, now + 3s, 3s, 1 ), 0.0f );
+  EXPECT_TRUE( buffer.empty() );
+
+  buffer.clear();
+  fillAtInterval( buffer, now, interval_ms, 30 );
+  EXPECT_GT( ros_camera_server::pruneAndComputeFps( buffer, now + 3s - interval_ms, 3s, 1 ), 0.0f );
+  EXPECT_EQ( buffer.size(), 1 );
+
+  buffer.clear();
+  fillAtInterval( buffer, now, interval_ms, 30 );
+  EXPECT_EQ( ros_camera_server::pruneAndComputeFps( buffer, now + 3s - interval_ms, 3s, 2 ), 0.0f );
+  EXPECT_EQ( buffer.size(), 1 );
+}
+
+TEST( FpsWindowTest, SingleTimestampAtNowReturnsZero )
+{
+  // dt of 0 must not divide by zero.
+  RingBuffer<time_point, 30> buffer;
+  const time_point now( 10000s );
+  buffer.push( now );
+  EXPECT_EQ( ros_camera_server::pruneAndComputeFps( buffer, now ), 0.0f );
 }
 
 int main( int argc, char **argv )

@@ -17,6 +17,7 @@
 
 #include "ros_camera_server/outputs/pipeline_output.hpp"
 #include "../logging.hpp"
+#include "ros_camera_server/helpers/fps_window.hpp"
 #include "ros_camera_server/helpers/reference_timestamp_helpers.hpp"
 
 #include <gst/gstcaps.h>
@@ -66,17 +67,7 @@ PipelineOutputStatistics PipelineOutput::statistics()
   PipelineOutputStatistics stats;
 
   auto now = clock::now();
-  // Drop old timestamps
-  while ( !output_buffer_timestamps_.empty() &&
-          duration_cast<milliseconds>( now - output_buffer_timestamps_.front() ).count() > 3000 ) {
-    output_buffer_timestamps_.pop_front();
-  }
-  if ( !output_buffer_timestamps_.empty() ) {
-    // Calculate dt from the oldest remaining timestamp (after pruning)
-    auto dt = duration_cast<milliseconds>( now - output_buffer_timestamps_.front() ).count();
-    if ( dt > 0 )
-      stats.fps = float( output_buffer_timestamps_.size() ) / ( float( dt ) / 1000.f );
-  }
+  stats.fps = pruneAndComputeFps( output_buffer_timestamps_, now );
   if ( !buffer_processing_times_.empty() ) {
     std::chrono::microseconds sum( 0 );
     for ( size_t i = 0; i < buffer_processing_times_.size(); ++i ) {
