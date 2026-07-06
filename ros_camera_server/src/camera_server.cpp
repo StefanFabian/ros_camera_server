@@ -160,13 +160,13 @@ void CameraServer::updateStatus()
   std::stringstream status_stream;
   status_stream << "Camera Server Status:\n";
   for ( const auto &pipeline : pipelines_ ) {
-    PipelineStatistics stats = pipeline->statistics();
     std::string indent = "    ";
     status_stream << "- " << pipeline->id() << std::endl;
     if ( !pipeline->isBuilt() ) {
       status_stream << indent << "state: Failed to build pipeline" << std::endl;
       continue;
     }
+    PipelineStatistics stats = pipeline->statistics();
     status_stream << indent << "state: " << gst_element_state_get_name( pipeline->getState() )
                   << std::endl;
     if ( pipeline->getState() != GST_STATE_PLAYING ) {
@@ -390,6 +390,9 @@ void CameraServer::initializeWebRTC()
       signaling_server_.reset();
       return;
     }
+    // signaling_port 0 lets the OS pick a free port; write the actual port back so
+    // announcements and stream URIs advertise a connectable endpoint.
+    configuration_.signaling_port = signaling_server_->port();
   }
 
   // Wire up each WebRTC output to the signaling server

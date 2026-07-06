@@ -103,7 +103,10 @@ private:
   std::vector<std::pair<GstElement *, GstPad *>> tee_request_pads_;
 
   using clock = std::chrono::steady_clock;
-  clock::time_point start_time_;
+  // True once buildPipeline() fully assembled the pipeline; false again after resetBuildState().
+  std::atomic<bool> built_{ false };
+  // Written on the GStreamer thread (start/stop/restart), read via uptime() on the ROS timer thread.
+  std::atomic<clock::time_point> start_time_{};
   mutable std::mutex input_timestamps_mutex_;
   mutable RingBuffer<clock::time_point, 30> input_buffer_timestamps_;
   // Guards current_segment_: written/read on the streaming thread (SEGMENT event, buffer probe)

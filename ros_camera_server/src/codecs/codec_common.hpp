@@ -317,7 +317,7 @@ namespace encoder_defaults
 {
 constexpr gint64 MIN_KEYFRAME_INTERVAL_NS = 1'000'000'000L; // 1s
 constexpr int DEFAULT_BITRATE_KBPS = 1000;                  // 1 Mbps
-constexpr int DEFAULT_KEY_INT_MAX = 10;
+constexpr int DEFAULT_KEY_INT_MAX = 30;
 constexpr int DEFAULT_GOP_SIZE = 30;
 // 1 slice = no slicing, >1 can reduce latency at the cost of compression efficiency
 // Some encoders require the sliced image to have dimensions that are multiples of e.g. 16

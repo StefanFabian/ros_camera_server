@@ -89,7 +89,7 @@ private:
   mutable RingBuffer<clock::time_point, 30> output_buffer_timestamps_;
   mutable RingBuffer<std::chrono::microseconds, 30> buffer_processing_times_;
   mutable RingBuffer<std::chrono::microseconds, 30> buffer_total_processing_times_;
-  mutable GstClockTime last_buffer_timestamp_ = 0;
+  mutable GstClockTime last_buffer_timestamp_ = GST_CLOCK_TIME_NONE;
   // Capture time of the current output frame (may span multiple buffers)
   guint64 current_frame_capture_time_ns_ = 0;
   // Server ingress time of the current output frame (when buffer entered this server's pipeline)

@@ -173,9 +173,19 @@ void SignalingServer::closeIfOpen( SoupWebsocketConnection *conn, unsigned short
 void SignalingServer::onHttpRequest( SoupServer *, SoupServerMessage *msg, const char *path,
                                      GHashTable *, gpointer user_data )
 {
-  const char *method = soup_server_message_get_method( msg );
-  if ( g_strcmp0( method, "GET" ) != 0 )
+  // This handler is registered at "/" and therefore also runs for WebSocket handshake
+  // requests on every path. libsoup only proceeds with the handshake if the handler leaves
+  // the status unset, so upgrade requests must pass through untouched.
+  SoupMessageHeaders *request_headers = soup_server_message_get_request_headers( msg );
+  if ( soup_message_headers_header_contains( request_headers, "Upgrade", "websocket" ) )
     return;
+
+  const char *method = soup_server_message_get_method( msg );
+  if ( g_strcmp0( method, "GET" ) != 0 ) {
+    // Without an explicit status libsoup responds with 500.
+    soup_server_message_set_status( msg, SOUP_STATUS_METHOD_NOT_ALLOWED, nullptr );
+    return;
+  }
 
   // Serve camera list
   if ( std::string( path ) == "/api/cameras" ) {
@@ -203,8 +213,10 @@ void SignalingServer::onHttpRequest( SoupServer *, SoupServerMessage *msg, const
   }
 
   // Only serve the test page for GET requests to "/"
-  if ( std::string( path ) != "/" )
+  if ( std::string( path ) != "/" ) {
+    soup_server_message_set_status( msg, SOUP_STATUS_NOT_FOUND, nullptr );
     return;
+  }
 
   SoupMessageBody *body = soup_server_message_get_response_body( msg );
   SoupMessageHeaders *headers = soup_server_message_get_response_headers( msg );
@@ -238,6 +250,8 @@ void SignalingServer::onWebSocketOpened( SoupServer *, SoupServerMessage *, cons
     it->second.on_connect( conn );
   } else {
     SERVER_LOG_WARN( "WebRTC client connected to unregistered path: %s", path_str.c_str() );
+    // No endpoint will ever service this connection; close it instead of keeping the socket open forever.
+    closeIfOpen( conn, SOUP_WEBSOCKET_CLOSE_NORMAL, "Unknown signaling path" );
   }
 }
 

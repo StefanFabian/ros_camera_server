@@ -59,14 +59,15 @@ std::string CameraPipeline::id() const { return configuration_.id; }
 
 std::string CameraPipeline::name() const { return configuration_.name; }
 
-bool CameraPipeline::isBuilt() const { return input_.bin != nullptr; }
+bool CameraPipeline::isBuilt() const { return built_.load( std::memory_order_acquire ); }
 
 std::chrono::milliseconds CameraPipeline::uptime() const
 {
-  if ( start_time_ == clock::time_point() ) {
+  clock::time_point start_time = start_time_.load( std::memory_order_relaxed );
+  if ( start_time == clock::time_point() ) {
     return std::chrono::milliseconds( 0 );
   }
-  return std::chrono::duration_cast<std::chrono::milliseconds>( clock::now() - start_time_ );
+  return std::chrono::duration_cast<std::chrono::milliseconds>( clock::now() - start_time );
 }
 
 void CameraPipeline::buildPipeline()
@@ -76,11 +77,9 @@ void CameraPipeline::buildPipeline()
     return;
   }
   SERVER_LOG_INFO_STREAM( "Creating pipeline for camera: " + configuration_.id );
-  // input_ is assigned at step 1, but isBuilt() keys off it, so a throw in a later step would
-  // latch isBuilt() true on a half-built pipeline that checkAndRepair would then start() and
-  // never rebuild. This guard rolls back partial construction on any failure (see
-  // resetBuildState) so the next attempt retries from scratch; it is dismissed once the build
-  // completes.
+  // This guard rolls back partial construction on any failure (see resetBuildState) so the next
+  // attempt retries from scratch instead of leaving a half-built pipeline behind; it is dismissed
+  // once the build completes.
   struct RollbackGuard {
     CameraPipeline *self = nullptr;
     ~RollbackGuard()
@@ -136,10 +135,12 @@ void CameraPipeline::buildPipeline()
   gst_object_unref( bus );
 
   rollback_guard.dismiss();
+  built_.store( true, std::memory_order_release );
 }
 
 void CameraPipeline::resetBuildState()
 {
+  built_.store( false, std::memory_order_release );
   // Mirror the destructor's teardown order: release tee request pads while their tees are still
   // alive, drop the outputs (their destructors touch elements still owned by pipeline_), reset
   // the flow controller (it holds a pointer into outputs_), then release the pipeline, which
@@ -170,8 +171,8 @@ void CameraPipeline::start()
   // per start/stop cycle: resetting it on every retry would pin uptime() near zero, so the
   // ">10s in non-PLAYING -> restart()" escalation would never be reached. stop()/restart()
   // clear start_time_, so the next cycle stamps a fresh time.
-  if ( start_time_ == clock::time_point() )
-    start_time_ = clock::now();
+  if ( start_time_.load( std::memory_order_relaxed ) == clock::time_point() )
+    start_time_.store( clock::now(), std::memory_order_relaxed );
   GstStateChangeReturn result =
       gst_element_set_state( GST_ELEMENT( pipeline_.get() ), GST_STATE_PLAYING );
   if ( result != GST_STATE_CHANGE_SUCCESS && result != GST_STATE_CHANGE_ASYNC &&
@@ -195,7 +196,7 @@ void CameraPipeline::setPipelineNull()
 void CameraPipeline::stop()
 {
   setPipelineNull();
-  start_time_ = clock::time_point();
+  start_time_.store( clock::time_point(), std::memory_order_relaxed );
   // Invalidate immediately so an early buffer of the next session can't use the previous
   // session's base_time before the (async) PLAYING bus message refreshes it.
   pipeline_base_time_.store( GST_CLOCK_TIME_NONE );

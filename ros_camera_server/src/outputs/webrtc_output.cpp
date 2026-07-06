@@ -469,7 +469,7 @@ void WebrtcOutput::addPeerBranch( SoupWebsocketConnection *conn )
 
   // libnice's ICE agent runs UPnP-IGD discovery by default, sending SSDP M-SEARCH
   // packets to 239.255.255.250 to find a router for automatic port mapping. We rely
-  // solely on STUN/signaling for connectivity, not router port mapping, so disable UPnP.
+  // solely on local signaling for connectivity, not router port mapping, so disable UPnP.
   {
     GObject *ice = nullptr;
     g_object_get( webrtcbin, "ice-agent", &ice, nullptr );
