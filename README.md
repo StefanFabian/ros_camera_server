@@ -160,4 +160,5 @@ These should work with the provided default config if you have a default video d
 ## 📄 License
 
 This project is licensed under the **AGPL-3.0-only** License.
+The message definitions in `ros_camera_server_msgs` are licensed under the **MIT** License.
 If you require a different license, please contact me through my website.

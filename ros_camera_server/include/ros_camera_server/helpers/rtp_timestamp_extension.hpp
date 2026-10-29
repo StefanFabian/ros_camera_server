@@ -13,6 +13,9 @@
  *
  *  You should have received a copy of the GNU Affero General Public License
  *  along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ *
+ *  As an exception, this file may alternatively be used under the terms of
+ *  the MIT License (https://opensource.org/license/mit).
  */
 
 #ifndef ROS_CAMERA_SERVER_RTP_TIMESTAMP_EXTENSION_HPP
