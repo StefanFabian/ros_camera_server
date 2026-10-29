@@ -48,7 +48,7 @@ repos:
     hooks:
       - id: cppcheck
         name: Cppcheck
-        entry: bash -c "cppcheck --force --quiet --library=googletest --inline-suppr --error-exitcode=1 --language=c++ $(find . -type d \( -name 'cmake-build-*' -o -name 'third_party' \) -prune -false -o -name '*.cpp' -o -name '*.hpp' -o -name '*.h' -o -name '*.c' -o -name '*.cc')"
+        entry: bash -c "cppcheck --force --quiet --library=googletest --inline-suppr --error-exitcode=1 --language=c++ $(find . \( -type d \( -name 'cmake-build-*' -o -name 'third_party' \) -o -path '*/helpers/json.hpp' \) -prune -o \( -name '*.cpp' -o -name '*.hpp' -o -name '*.h' -o -name '*.c' -o -name '*.cc' \) -print)"
         language: system
         files: \.(cpp|cc|hpp|h)$
         pass_filenames: false

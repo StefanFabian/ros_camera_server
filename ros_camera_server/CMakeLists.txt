@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.15)
+cmake_minimum_required(VERSION 3.16)
 project(ros_camera_server)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -63,12 +63,14 @@ target_link_libraries(
   ${GST_LIBRARIES}
   ${SOUP_LIBRARIES}
   rclcpp::rclcpp
+  ${ros_camera_server_msgs_TARGETS}
 )
 target_link_libraries(
   ${PROJECT_NAME} PRIVATE
+  ament_index_cpp::ament_index_cpp
+  rclcpp_components::component
   yaml-cpp::yaml-cpp
 )
-ament_target_dependencies(${PROJECT_NAME} PUBLIC ament_index_cpp ros_camera_server_msgs rclcpp_components)
 target_include_directories(${PROJECT_NAME}
   PUBLIC ${GST_INCLUDE_DIRS} ${SOUP_INCLUDE_DIRS})
 
@@ -125,8 +127,7 @@ if(BUILD_TESTING)
   target_link_libraries(test_factories ${PROJECT_NAME} yaml-cpp::yaml-cpp)
 
   ament_add_gtest(test_streaming test/test_streaming.cpp)
-  target_link_libraries(test_streaming ${PROJECT_NAME} yaml-cpp::yaml-cpp)
-  ament_target_dependencies(test_streaming sensor_msgs)
+  target_link_libraries(test_streaming ${PROJECT_NAME} yaml-cpp::yaml-cpp ${sensor_msgs_TARGETS})
   target_include_directories(test_streaming PRIVATE src)
 
   ament_add_gtest(test_pipeline_builder test/test_pipeline_builder.cpp)
