@@ -36,6 +36,8 @@ jobs:
         setup:
           - rosdistro: jazzy
             os: ubuntu-24.04
+          - rosdistro: lyrical
+            os: ubuntu-26.04
     runs-on: ${{ matrix.setup.os }}
     container:
       image: ros:${{ matrix.setup.rosdistro }}-ros-base

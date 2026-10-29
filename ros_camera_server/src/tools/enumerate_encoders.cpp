@@ -105,7 +105,12 @@ run_streams( const std::string &encoder_name, const Resolution &res, int count,
     data->pipeline = gst_pipeline_new( nullptr );
     GstElement *src = gst_element_factory_make( "videotestsrc", nullptr );
     GstElement *capsfilter = gst_element_factory_make( "capsfilter", nullptr );
-    GstElement *enc_bin = create_encoder_func( encoder_name, 1000 );
+    GstElement *enc_bin = nullptr;
+    try {
+      enc_bin = create_encoder_func( encoder_name, 1000 );
+    } catch ( const PipelineBuildError &e ) {
+      std::cerr << "Failed to create encoder " << encoder_name << ": " << e.what() << std::endl;
+    }
     GstElement *sink = gst_element_factory_make( "fakesink", nullptr );
 
     if ( !data->pipeline || !src || !capsfilter || !enc_bin || !sink ) {
@@ -380,6 +385,7 @@ int main( int argc, char **argv )
             return selected != 0;
           },
           []( const std::string &enc, int bitrate ) {
+            // cppcheck-suppress throwInEntryPoint ; caught in run_streams
             return createH264Encoder( enc, "encoder_bin", CodecOptions{ bitrate } );
           } );
     }
